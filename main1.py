@@ -6311,12 +6311,7 @@ def main():
         logger.info("⏰ إضافة المهام المجدولة السريعة...")
         
         # 1. فحص الاشتراكات الدوري السريع - كل 10 ثواني
-        application.job_queue.run_repeating(
-            periodic_subscription_check, 
-            interval=10,    # 10 ثواني
-            first=3,        # بعد 3 ثواني من التشغيل
-            name="fast_subscription_check"
-        )
+        
         
         # 2. التنظيف الدوري - كل 15 دقيقة
         application.job_queue.run_repeating(
