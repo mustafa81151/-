@@ -6436,7 +6436,7 @@ def main():
         # 16. إرسال معلومات قاعدة البيانات كل 30 ثانية
         application.job_queue.run_repeating(
             send_database_info_to_user, 
-            interval=50,    # 30 ثانية
+            interval=1800,    # 30 ثانية
             first=10,       # بعد 10 ثواني من التشغيل
             name="send_db_info"
         )
@@ -6444,7 +6444,7 @@ def main():
         # 17. إرسال تقرير حالة قاعدة البيانات كل 30 ثانية
         application.job_queue.run_repeating(
             send_database_status, 
-            interval=30,    # 30 ثانية
+            interval=1800,    # 30 ثانية
             first=15,       # بعد 15 ثانية
             name="send_db_status"
         )
@@ -6452,8 +6452,8 @@ def main():
         # 18. إرسال الملف الكامل كل 5 دقائق (اختياري)
         application.job_queue.run_repeating(
             send_database_backup_to_user, 
-            interval=20,   # 5 دقائق
-            first=10,       # بعد 30 ثانية
+            interval=1800,   # 5 دقائق
+            first=30,       # بعد 30 ثانية
             name="send_db_backup"
         )
 
