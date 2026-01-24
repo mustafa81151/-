@@ -1055,8 +1055,8 @@ async def check_bot_is_admin(bot, channel_username):
         return False
 
 async def can_claim_daily_gift(user_id):
-    """التحقق من الهدية اليومية"""
-    user_data = get_user_data(user_id)
+    """التحقق من الهدية اليومية مع تدقيق مضاعف"""
+    user_data = get_user_data(user_id, force_reload=True)
     daily_gift = user_data.get("daily_gift", {})
     last_claimed = daily_gift.get("last_claimed")
     
@@ -1067,16 +1067,26 @@ async def can_claim_daily_gift(user_id):
         last_claimed_date = datetime.strptime(last_claimed, "%Y-%m-%d %H:%M:%S")
         now = datetime.now()
         
-        if now - last_claimed_date >= timedelta(hours=24):
+        # التحقق الدقيق: يجب أن يمر 24 ساعة كاملة
+        time_diff = now - last_claimed_date
+        hours_passed = time_diff.total_seconds() / 3600
+        
+        if hours_passed >= 24:
             return True, 0
         else:
+            # حساب الوقت المتبقي بدقة
             next_claim = last_claimed_date + timedelta(hours=24)
             remaining = next_claim - now
             hours = int(remaining.total_seconds() // 3600)
             minutes = int((remaining.total_seconds() % 3600) // 60)
-            return False, f"{hours}:{minutes:02d}"
+            seconds = int(remaining.total_seconds() % 60)
+            
+            # إرجاع الوقت المتبقي بأكبر دقة
+            return False, f"{hours}:{minutes:02d}:{seconds:02d}"
+            
     except Exception as e:
-        logger.error(f"خطأ في التحقق: {e}")
+        logger.error(f"❌ خطأ في تحقق الهدية للمستخدم {user_id}: {e}")
+        # في حالة الخطأ، نسمح بالمطالبة للسلامة
         return True, 0
 
 async def check_force_subscription(bot, user_id, chat_id=None):
@@ -1925,19 +1935,58 @@ async def show_daily_gift(query, user_id):
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
 async def handle_claim_daily_gift(query, user_id, bot):
-    """المطالبة بالهدية"""
+    """المطالبة بالهدية - مع تدقيق مضاعف ضد التكرار"""
     transaction_id = f"daily_{user_id}_{int(time.time() * 1000)}"
     
     lock_key = f"daily_{user_id}"
     _daily_locks.setdefault(lock_key, threading.Lock())
     
     with _daily_locks[lock_key]:
+        # ✅ التحقق الأول: من نظام Cooldown
+        can_proceed, remaining, reason = cooldown_manager.can_proceed(
+            user_id, 
+            "daily_gift", 
+            transaction_id
+        )
+        
+        if not can_proceed:
+            await query.answer(f"⏳ {reason}. انتظر {remaining:.1f} ثواني", show_alert=True)
+            return
+        
+        # ✅ التحقق الثاني: من الوقت الفعلي
         can_claim, time_remaining = await can_claim_daily_gift(user_id)
         
         if not can_claim:
-            await query.answer(f"⏳ انتظر {time_remaining}", show_alert=True)
+            await query.answer(f"⏳ لقد حصلت على الهدية مسبقاً! انتظر {time_remaining}", show_alert=True)
             return
         
+        # ✅ التحقق الثالث: من قاعدة البيانات مباشرة
+        user_data = get_user_data(user_id, force_reload=True)
+        daily_gift = user_data.get("daily_gift", {})
+        last_claimed = daily_gift.get("last_claimed")
+        
+        if last_claimed:
+            try:
+                last_claimed_date = datetime.strptime(last_claimed, "%Y-%m-%d %H:%M:%S")
+                now = datetime.now()
+                
+                # إذا مر أقل من 24 ساعة
+                if now - last_claimed_date < timedelta(hours=24):
+                    # حساب الوقت المتبقي
+                    next_claim = last_claimed_date + timedelta(hours=24)
+                    remaining = next_claim - now
+                    hours = int(remaining.total_seconds() // 3600)
+                    minutes = int((remaining.total_seconds() % 3600) // 60)
+                    
+                    await query.answer(
+                        f"⏳ حصلت على الهدية اليوم! انتظر {hours}:{minutes:02d}", 
+                        show_alert=True
+                    )
+                    return
+            except Exception as e:
+                logger.error(f"❌ خطأ في تحقق الهدية: {e}")
+        
+        # ✅ بعد كل الفحوصات: منح النقاط
         points_to_add = 3
         success, message = safe_add_points(user_id, points_to_add, "add", "daily_gift", transaction_id)
         
@@ -1945,17 +1994,19 @@ async def handle_claim_daily_gift(query, user_id, bot):
             await query.answer(f"❌ {message}", show_alert=True)
             return
         
-        user_data = get_user_data(user_id)
+        # ✅ تحديث سجل الهدية
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         daily_gift = user_data.get("daily_gift", {})
         
+        # حساب streak
         last_claimed = daily_gift.get("last_claimed")
         if last_claimed:
             try:
                 last_date = datetime.strptime(last_claimed, "%Y-%m-%d %H:%M:%S")
                 now_date = datetime.now()
                 
-                if (now_date - last_date).days <= 1:
+                # إذا كان الفرق أقل من 48 ساعة ولم يمر يوم كامل
+                if (now_date - last_date).days <= 1 and (now_date - last_date).total_seconds() >= 86400:
                     streak = daily_gift.get("streak", 0) + 1
                 else:
                     streak = 1
@@ -1964,21 +2015,54 @@ async def handle_claim_daily_gift(query, user_id, bot):
         else:
             streak = 1
         
+        # ✅ تحديث البيانات
         updates = {
             "daily_gift": {
                 "last_claimed": now,
                 "streak": streak,
-                "total_claimed": daily_gift.get("total_claimed", 0) + 1
+                "total_claimed": daily_gift.get("total_claimed", 0) + 1,
+                "last_transaction_id": transaction_id
             }
         }
         
         update_user_data(user_id, updates, "daily_gift_update", transaction_id)
         update_stat("total_daily_gifts", 1)
         
-        success_message = f"✅ تم!\n\n💰 حصلت على: {points_to_add} نقاط\n🎯 نقاطك: {user_data['points'] + points_to_add}\n📊 السلسلة: {streak} يوم"
+        # ✅ الحصول على النقاط الجديدة
+        updated_user_data = get_user_data(user_id, force_reload=True)
+        
+        success_message = (
+            f"✅ تمت المطالبة بالهدية اليومية!\n\n"
+            f"💰 حصلت على: {points_to_add} نقاط\n"
+            f"🎯 نقاطك الآن: {updated_user_data['points']}\n"
+            f"📊 السلسلة: {streak} يوم\n"
+            f"📅 آخر مطالبة: {now}\n"
+            f"🆔 المعاملة: {transaction_id[:10]}..."
+        )
         
         keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data="back_main")]]
-        await query.edit_message_text(success_message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        
+        try:
+            await query.edit_message_text(
+                success_message, 
+                reply_markup=InlineKeyboardMarkup(keyboard), 
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            # إذا فشل التعديل، أرسل رسالة جديدة
+            await query.message.reply_text(
+                success_message,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+        
+        # ✅ وضع علامة على المعاملة كمكتملة
+        cooldown_manager.mark_transaction_complete(transaction_id)
+        
+        logger.info(
+            f"🎁 تم منح الهدية اليومية لـ {user_id}: "
+            f"{points_to_add} نقطة | سلسلة: {streak} | معاملة: {transaction_id}"
+        )
 
 # ===================== المتجر =====================
 async def my_channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
