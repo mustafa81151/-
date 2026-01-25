@@ -1500,6 +1500,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = str(query.from_user.id)
     
+    # ✅ تعريف bot من context
+    bot = context.bot
+    
     if is_banned(query.from_user.id):
         await query.answer("❌ محظور", show_alert=True)
         return
@@ -1526,7 +1529,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_store(query)
         
         elif query.data == "collect_points":
-            await show_collect_points(query, user_id)
+            await show_collect_points(query, user_id, context, page=0)  # ✅ إضافة page=0
+        
+        elif query.data.startswith("page_"):
+            # معالجة التنقل بين الصفحات
+            try:
+                page = int(query.data.replace("page_", ""))
+                await show_collect_points(query, user_id, context, page=page)
+            except ValueError:
+                await show_collect_points(query, user_id, context, page=0)
+            except Exception as e:
+                logger.error(f"خطأ في معالجة الصفحة: {e}")
+                await query.answer("❌ خطأ في التنقل", show_alert=True)
         
         elif query.data == "daily_gift":
             await show_daily_gift(query, user_id)
@@ -1535,7 +1549,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_top(query)
         
         elif query.data == "invite_link":
-            await show_invite_link(query, user_id, context.bot)
+            await show_invite_link(query, user_id, bot)
         
         elif query.data == "codes":
             await show_codes_panel(query)
@@ -1550,10 +1564,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await back_to_main(query, user_id)
         
         elif query.data == "claim_daily_gift":
-            await handle_claim_daily_gift(query, user_id, context.bot)
+            await handle_claim_daily_gift(query, user_id, bot)
         
         elif query.data == "check_force_sub":
-            can_use, missing = await check_force_subscription(context.bot, int(user_id), query.message.chat_id)
+            can_use, missing = await check_force_subscription(bot, int(user_id), query.message.chat_id)
             if can_use:
                 await query.answer("✅ مشترك!", show_alert=True)
                 await back_to_main(query, user_id)
@@ -1564,13 +1578,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_buy(query, context)
         
         elif query.data.startswith("join_"):
-            await handle_join_channel(query, user_id, context.bot)
+            await handle_join_channel(query, user_id, bot)
         
-        elif query.data.startswith("verify_"):
-            await handle_verify_channel(query, user_id, context.bot, context)
+        elif query.data.startswith("verify_channel_"):
+            await handle_verify_channel(query, user_id, bot, context)
         
         elif query.data.startswith("report_"):
-            await handle_report_channel(query, user_id, context.bot)
+            await handle_report_channel(query, user_id, bot)
         
         elif query.data.startswith("admin_"):
             if not is_admin(query.from_user.id):
@@ -2198,8 +2212,8 @@ def complete_channel(channel_id):
     conn.commit()
     conn.close()
 
-async def show_collect_points(query, user_id):
-    """عرض قنوات التجميع المتاحة للمستخدم مع التحقق الفوري"""
+async def show_collect_points(query, user_id, context, page=0):
+    """عرض قنوات التجميع المتاحة للمستخدم مع زر تحقق بجانب القناة"""
     try:
         # تحديث فوري للذاكرة المؤقتة أولاً
         user_data = get_user_data(user_id, force_reload=True)
@@ -2209,35 +2223,32 @@ async def show_collect_points(query, user_id):
         
         data = load_data()
         
-        text = "📊 **قنوات التجميع المتاحة:**\n\n"
-        keyboard = []
-        available_count = 0
-        total_channels = 0
-        
-        # إعادة تحميل بيانات المستخدم للتأكد من التحديثات
-        user_data = get_user_data(user_id, force_reload=True)
+        # جمع جميع القنوات المتاحة
+        all_channels = []
         
         for channel_id, channel_data in data.get("channels", {}).items():
-            total_channels += 1
             channel_username = channel_data.get("username", "")
-            
             if not channel_username:
                 continue
             
-            # التحقق الفوري: إذا انضم المستخدم للتو، تخطي القناة مباشرة
+            # تخطي القنوات التي المستخدم منضم لها حالياً
             if channel_id in user_data.get("active_subscriptions", []):
-                # ✅ تخطي القناة فوراً إذا كان منضماً حالياً
                 continue
-            
-            # تخطي القنوات المكتملة
             if channel_data.get("completed", False):
                 continue
-            
-            # تخطي القنوات غير النشطة
             if not channel_data.get("is_active", True):
                 continue
             
-            # التحقق من joined_channels في الذاكرة المؤقتة
+            # التحقق مما إذا كان يجب عرض القناة للمستخدم
+            should_show = await should_channel_be_shown_to_user(
+                context.bot,
+                user_id, 
+                channel_id
+            )
+            if not should_show:
+                continue
+            
+            # التحقق من joined_channels
             joined_channels = user_data.get("joined_channels", {})
             if isinstance(joined_channels, str):
                 try:
@@ -2246,71 +2257,114 @@ async def show_collect_points(query, user_id):
                 except:
                     joined_channels = {}
             
-            # التحقق الفوري: إذا كان منضماً ولم يغادر
+            # إذا كان منضماً حالياً ولم يغادر - تخطي
             if channel_id in joined_channels:
                 join_info = joined_channels[channel_id]
                 if join_info.get("verified", False) and not join_info.get("left", False):
-                    # ✅ تخطي القناة فوراً
                     continue
             
-            # التحقق من إمكانية الانضمام
             can_join, reason = can_user_join_channel(user_id, channel_id, channel_username, channel_data)
-            
             if not can_join:
                 continue
             
-            available_count += 1
-            
             current = channel_data.get("current", 0)
             required = channel_data.get("required", 0)
-            percentage = (current / max(required, 1)) * 100
             
-            # رابط القناة
-            channel_link = f"https://t.me/{channel_username.replace('@', '')}"
+            all_channels.append({
+                "id": channel_id,
+                "username": channel_username,
+                "current": current,
+                "required": required,
+            })
+        
+        # تنظيم القنوات في صفحات (10 قنوات لكل صفحة)
+        CHANNELS_PER_PAGE = 10
+        total_pages = (len(all_channels) + CHANNELS_PER_PAGE - 1) // CHANNELS_PER_PAGE
+        
+        # التأكد من أن الصفحة ضمن النطاق
+        if page < 0:
+            page = 0
+        elif page >= total_pages and total_pages > 0:
+            page = total_pages - 1
+        
+        # الحصول على القنوات للصفحة الحالية
+        start_idx = page * CHANNELS_PER_PAGE
+        end_idx = start_idx + CHANNELS_PER_PAGE
+        current_channels = all_channels[start_idx:end_idx]
+        
+        keyboard = []
+        
+        if not current_channels:
+            text = "📭 لا توجد قنوات متاحة لك حالياً.\n\n"
+            text += "💡 الأسباب المحتملة:\n• جميع القنوات مكتملة\n• انضممت لجميع القنوات النشطة\n• لا توجد قنوات نشطة حالياً"
             
-            # إضافة الأزرار
+            keyboard.append([InlineKeyboardButton("🔄 تحديث", callback_data="collect_points")])
+            keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
+            return
+        
+        # عرض القنوات مع زر تحقق بجانب كل قناة
+        for channel in current_channels:
+            channel_link = f"https://t.me/{channel['username'].replace('@', '')}"
+            
+            # صف واحد: زر رابط القناة وزر التحقق
             keyboard.append([
-                InlineKeyboardButton(f"📲 @{channel_username}", url=channel_link),
-                InlineKeyboardButton(f"✅ انضم (3 نقاط)", callback_data=f"join_channel_{channel_id}")
+                InlineKeyboardButton(
+                    f"📲 @{channel['username']}", 
+                    url=channel_link
+                ),
+                InlineKeyboardButton(
+                    f"✅ تحقق من الانضمام", 
+                    callback_data=f"verify_channel_{channel['id']}"
+                )
             ])
+        
+        # إضافة أزرار التنقل بين الصفحات إذا كان هناك أكثر من صفحة
+        if total_pages > 1:
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"page_{page-1}"))
             
-            text += f"📢 @{channel_username}\n"
-            text += f"   📊 {current}/{required} ({percentage:.1f}%)\n\n"
+            nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="current_page"))
+            
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"page_{page+1}"))
+            
+            keyboard.append(nav_buttons)
         
-        if available_count == 0:
-            text = "📭 **لا توجد قنوات متاحة لك حالياً.**\n\n"
-            text += "💡 الأسباب المحتملة:\n"
-            text += "• جميع القنوات مكتملة\n"
-            text += "• انضممت لجميع القنوات النشطة\n"
-            text += "• لا توجد قنوات نشطة حالياً\n\n"
-            text += "🔄 جرب تحديث الصفحة بعد قليل"
-        else:
-            text += f"\n📈 **متاح لك {available_count} من {total_channels} قناة**"
-        
-        # تحديث إحصائيات المستخدم
-        user_data = get_user_data(user_id, force_reload=True)
-        text += f"\n\n👤 **إحصائياتك:**\n"
-        text += f"• نقاطك: {user_data.get('points', 0)}\n"
-        text += f"• دعواتك: {user_data.get('invites', 0)}\n"
-        
-        keyboard.append([InlineKeyboardButton("🔄 تحديث القائمة", callback_data="collect_points")])
+        # أزرار التحكم
+        keyboard.append([InlineKeyboardButton("🔄 تحديث", callback_data="collect_points")])
         keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # إرسال/تعديل الرسالة
+        text = f"📲 اختر قناة للتحقق من الانضمام:"
         
         try:
             await query.edit_message_text(
                 text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
+                reply_markup=reply_markup,
+                parse_mode="HTML"
             )
         except Exception as e:
             error_msg = str(e).lower()
             if "not modified" in error_msg:
                 await query.answer("🔄 القائمة محدثة بالفعل!", show_alert=False)
+            elif "message is not modified" in error_msg:
+                pass
             else:
                 await query.message.reply_text(
                     text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="Markdown"
+                    reply_markup=reply_markup,
+                    parse_mode="HTML"
                 )
         
     except Exception as e:
@@ -2318,6 +2372,153 @@ async def show_collect_points(query, user_id):
         import traceback
         traceback.print_exc()
         await query.answer("❌ حدث خطأ في عرض القنوات", show_alert=True)
+
+async def handle_report_channel(query, user_id, bot):
+    """معالجة الإبلاغ مع طلب السبب"""
+    try:
+        channel_id = query.data.replace("report_", "")
+        
+        # التحقق من أن المستخدم لم يبلغ عن هذه القناة مسبقاً في هذه الجولة
+        if not can_user_report_channel(user_id, channel_id):
+            await query.answer("⚠️ أبلغت عن هذه القناة مسبقاً في هذه الجولة!", show_alert=True)
+            return
+        
+        # حفظ حالة التبليغ للاستكمال
+        context = query.message._bot._dispatcher.context_types.context()
+        context.user_data["reporting_channel"] = {
+            "channel_id": channel_id,
+            "user_id": user_id,
+            "message_id": query.message.message_id
+        }
+        
+        # الحصول على معلومات القناة
+        channel_data = get_channel_data(channel_id)
+        channel_username = channel_data.get("username", "غير معروف") if channel_data else "غير معروف"
+        
+        # طلب السبب
+        try:
+            await query.edit_message_text(
+                f"🚨 **الإبلاغ عن قناة**\n\n"
+                f"📢 القناة: @{channel_username}\n\n"
+                f"📝 الرجاء كتابة سبب الإبلاغ:\n"
+                f"مثال:\n"
+                f"• محتوى غير مناسب\n"
+                f"• قناة مزيفة\n"
+                f"• رابط لا يعمل\n"
+                f"• مشكلة تقنية\n\n"
+                f"⚠️ **ملاحظة:** يمكنك الإبلاغ مرة واحدة فقط لكل قناة في كل جولة",
+                parse_mode="HTML"
+            )
+        except:
+            await query.message.reply_text(
+                f"🚨 **الإبلاغ عن قناة**\n\n"
+                f"📢 القناة: @{channel_username}\n\n"
+                f"📝 الرجاء كتابة سبب الإبلاغ:\n"
+                f"مثال:\n"
+                f"• محتوى غير مناسب\n"
+                f"• قناة مزيفة\n"
+                f"• رابط لا يعمل\n"
+                f"• مشكلة تقنية\n\n"
+                f"⚠️ **ملاحظة:** يمكنك الإبلاغ مرة واحدة فقط لكل قناة في كل جولة",
+                parse_mode="HTML"
+            )
+        
+    except Exception as e:
+        logger.error(f"❌ خطأ في handle_report_channel: {e}")
+        await query.answer("❌ حدث خطأ في معالجة التبليغ", show_alert=True)
+
+async def handle_report_channel(query, user_id, bot):
+    """معالجة الإبلاغ مع طلب السبب"""
+    channel_id = query.data.replace("report_", "")
+    
+    # التحقق من أن المستخدم لم يبلغ عن هذه القناة مسبقاً في هذه الجولة
+    if not can_user_report_channel(user_id, channel_id):
+        await query.answer("⚠️ أبلغت عن هذه القناة مسبقاً في هذه الجولة!", show_alert=True)
+        return
+    
+    # حفظ حالة التبليغ للاستكمال
+    context.user_data["reporting_channel"] = {
+        "channel_id": channel_id,
+        "user_id": user_id,
+        "message_id": query.message.message_id
+    }
+    
+    # طلب السبب
+    await query.edit_message_text(
+        "🚨 **الإبلاغ عن قناة**\n\n"
+        "📝 الرجاء كتابة سبب الإبلاغ:\n"
+        "مثال:\n"
+        "• محتوى غير مناسب\n"
+        "• قناة مزيفة\n"
+        "• رابط لا يعمل\n"
+        "• مشكلة تقنية\n\n"
+        "⚠️ **ملاحظة:** يمكنك الإبلاغ مرة واحدة فقط لكل قناة في كل جولة",
+        parse_mode="Markdown"
+    )
+
+def can_user_report_channel(user_id, channel_id):
+    """التحقق من إمكانية الإبلاغ عن القناة (مرة واحدة لكل جولة)"""
+    from database import get_user_data, get_channel_data
+    
+    user_data = get_user_data(user_id)
+    channel_data = get_channel_data(channel_id)
+    
+    if not channel_data:
+        return False
+    
+    # جولة القناة الحالية
+    current_round = channel_data.get("reuse_count", 0)
+    
+    # الحصول على التقارير السابقة للمستخدم
+    reports = user_data.get("channel_reports", {})
+    
+    # إذا كان هناك تقرير سابق لنفس القناة في نفس الجولة
+    if channel_id in reports:
+        report_data = reports[channel_id]
+        if report_data.get("round", -1) == current_round:
+            return False
+    
+    return True
+
+def add_channel_report(user_id, channel_id, reason):
+    """إضافة تقرير عن قناة"""
+    from database import get_user_data, get_channel_data, update_user_data
+    
+    user_data = get_user_data(user_id)
+    channel_data = get_channel_data(channel_id)
+    
+    if not channel_data:
+        return False
+    
+    current_round = channel_data.get("reuse_count", 0)
+    
+    # تحديث تقارير المستخدم
+    reports = user_data.get("channel_reports", {})
+    reports[channel_id] = {
+        "reason": reason,
+        "reported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "round": current_round,
+        "channel_username": channel_data.get("username", "")
+    }
+    
+    # تحديث إحصائيات التبليغ
+    updates = {
+        "channel_reports": reports,
+        "total_reports": user_data.get("total_reports", 0) + 1
+    }
+    
+    # إضافة القناة إلى القائمة المحظورة للمستخدم (لفترة الجولة الحالية)
+    blocked_channels = user_data.get("blocked_channels_by_report", [])
+    if channel_id not in blocked_channels:
+        blocked_channels.append(channel_id)
+        updates["blocked_channels_by_report"] = blocked_channels
+    
+    if update_user_data(user_id, updates, "channel_report"):
+        # تحديث إحصائيات النظام
+        update_system_stats("total_reports", increment=1)
+        return True
+    
+    return False
 
 def check_and_mark_completed_channels():
     """
@@ -2364,9 +2565,110 @@ def check_and_mark_completed_channels():
         logger.error(f"❌ خطأ في check_and_mark_completed_channels: {e}")
         return 0
 
-def should_channel_be_shown_to_user(user_id, channel_id):
+async def is_user_member_of_channel(bot, channel_username, user_id):
     """
-    التحقق مما إذا كان يجب عرض القناة للمستخدم - مع إصلاح مشكلة temp_left
+    التحقق المباشر من تيليغرام إذا كان المستخدم عضو في القناة
+    يرجع:
+        True: عضو
+        False: غير عضو
+        None: خطأ في التحقق
+    """
+    try:
+        channel_username = channel_username.replace("@", "").strip()
+        
+        # الحصول على معلومات القناة
+        try:
+            chat = await bot.get_chat(chat_id=f"@{channel_username}")
+        except Exception as chat_error:
+            logger.error(f"❌ خطأ في جلب القناة @{channel_username}: {chat_error}")
+            return None
+        
+        # الحصول على حالة العضوية
+        try:
+            member = await bot.get_chat_member(chat_id=chat.id, user_id=user_id)
+            
+            # الحالات الصالحة للعضوية
+            valid_statuses = ["member", "administrator", "creator"]
+            
+            if member.status in valid_statuses:
+                return True
+            else:
+                return False
+                
+        except Exception as member_error:
+            error_text = str(member_error).lower()
+            
+            # حالات الخطأ
+            if "user not found" in error_text or "user not participant" in error_text:
+                return False
+            elif "forbidden" in error_text or "kicked" in error_text:
+                return None
+            else:
+                logger.error(f"❌ خطأ في التحقق من العضوية: {member_error}")
+                return None
+                
+    except Exception as e:
+        logger.error(f"❌ خطأ عام في is_user_member_of_channel: {e}")
+        return None
+
+# ==================== نظام التخزين المؤقت للتحقق من العضوية ====================
+
+_user_member_cache = {}
+_cache_expiry = 300  # 5 دقائق
+
+async def cached_is_user_member(bot, channel_username, user_id):
+    """
+    نسخة مخبأة من التحقق من العضوية لتحسين الأداء
+    يخزن النتائج لمدة 5 دقائق
+    """
+    cache_key = f"{user_id}_{channel_username}"
+    current_time = time.time()
+    
+    # التحقق من التخزين المؤقت
+    if cache_key in _user_member_cache:
+        cache_time, is_member = _user_member_cache[cache_key]
+        if current_time - cache_time < _cache_expiry:
+            logger.debug(f"📦 استخدام التخزين المؤقت للتحقق: {cache_key}")
+            return is_member
+    
+    # التحقق المباشر
+    logger.debug(f"🔍 التحقق المباشر من العضوية: {cache_key}")
+    is_member = await is_user_member_of_channel(bot, channel_username, user_id)
+    
+    if is_member is not None:
+        _user_member_cache[cache_key] = (current_time, is_member)
+        logger.debug(f"✅ تم تخزين نتيجة التحقق: {cache_key} = {is_member}")
+    
+    return is_member
+
+
+def cleanup_member_cache():
+    """
+    تنظيف التخزين المؤقت القديم
+    """
+    try:
+        current_time = time.time()
+        expired_keys = []
+        
+        for key, (cache_time, _) in list(_user_member_cache.items()):
+            if current_time - cache_time > _cache_expiry:
+                expired_keys.append(key)
+        
+        for key in expired_keys:
+            del _user_member_cache[key]
+        
+        if expired_keys:
+            logger.debug(f"🧹 تم تنظيف {len(expired_keys)} مدخل من ذاكرة التحقق")
+        
+        return len(expired_keys)
+        
+    except Exception as e:
+        logger.error(f"❌ خطأ في تنظيف ذاكرة التحقق: {e}")
+        return 0
+
+async def should_channel_be_shown_to_user(bot, user_id, channel_id):
+    """
+    التحقق مما إذا كان يجب عرض القناة للمستخدم مع التحقق المباشر من تيليغرام
     """
     import sqlite3
     import json
@@ -2381,7 +2683,7 @@ def should_channel_be_shown_to_user(user_id, channel_id):
         
         # ✅ جلب بيانات القناة
         cursor.execute('''
-            SELECT owner, completed, username, is_active, current, required, reuse_count
+            SELECT username, owner, completed, is_active, current, required, reuse_count
             FROM channels WHERE channel_id = ?
         ''', (channel_id,))
         
@@ -2390,7 +2692,7 @@ def should_channel_be_shown_to_user(user_id, channel_id):
             conn.close()
             return False
         
-        owner, completed, channel_username, is_active, current, required, reuse_count = result
+        username, owner, completed, is_active, current, required, reuse_count = result
         
         # 1. القناة مكتملة - لا تعرض
         if completed:
@@ -2419,6 +2721,22 @@ def should_channel_be_shown_to_user(user_id, channel_id):
             conn.commit()
             conn.close()
             return False
+        
+        # ✅ ✅ ✅ التحقق المباشر من تيليغرام (هذا هو الحل الحقيقي)
+        try:
+            is_member = await is_user_member_of_channel(bot, username, int(user_id))
+            
+            if is_member is None:
+                # خطأ في التحقق - نستمر بالفحص العادي
+                logger.warning(f"⚠️ فشل التحقق المباشر من @{username} للمستخدم {user_id}")
+            elif is_member:
+                # ✅ المستخدم منضم للقناة - لا تعرضها له
+                logger.info(f"✅ اكتشاف: المستخدم {user_id} منضم لـ @{username} (خارج البوت)")
+                conn.close()
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في التحقق المباشر: {e}")
         
         # ✅ جلب بيانات المستخدم
         cursor.execute('''
@@ -3057,55 +3375,142 @@ async def handle_verify_channel(query, user_id, bot, context):
             if user_id in _cache_last_update:
                 del _cache_last_update[user_id]
 
-async def handle_report_channel(query, user_id, bot):
-    """معالجة الإبلاغ"""
-    channel_id = query.data.replace("report_", "")
-    
-    if not can_user_report_channel(user_id, channel_id):
-        await query.answer("⚠️ أبلغت عنها مسبقاً!", show_alert=True)
-        return
-    
-    data = load_data()
-    if channel_id in data.get("channels", {}):
-        channel = data["channels"][channel_id]
-        
-        if "reports" not in data:
-            data["reports"] = {}
-        
-        report_id = f"report_{int(time.time())}"
-        data["reports"][report_id] = {
-            "channel_id": channel_id,
-            "channel_username": channel.get("username", ""),
-            "channel_type": "عادية",
-            "reporter_id": user_id,
-            "reporter_username": get_user_data(user_id).get("username", ""),
-            "reason": "مشكلة في القناة",
-            "status": "pending",
-            "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        
-        save_data(data)
-        
-        add_user_reported_channel(user_id, channel_id)
-        
-        await query.answer("✅ تم تسجيل البلاغ", show_alert=True)
-        
-        admin_msg = f"🚨 إبلاغ جديد!\n\n📢 @{channel['username']}\n👤 المبلغ: @{get_user_data(user_id).get('username', 'بدون')}"
-        await send_to_admin(bot, admin_msg)
+
+
+# ===================== نظام التوب المطور (يستثني الأدمن) =====================
 
 async def show_top(query):
-    """عرض التوب"""
+    """عرض التوب المطور مع الأقسام والروابط - يستثني الأدمن"""
     users_data = load_users()
+    data = load_data()
+    admins = data.get("admins", [])
     
-    users_points = [(uid, d.get("points", 0), d.get("username", "بدون")) for uid, d in users_data.items()]
-    users_points.sort(key=lambda x: x[1], reverse=True)
+    # تصفية المستخدمين (استبعاد الأدمن)
+    filtered_users = {}
+    for uid, user_data in users_data.items():
+        # استبعاد الأدمن من قائمة التوب
+        if str(uid) not in admins or str(uid) == str(query.from_user.id):
+            # السماح للمستخدم برؤية نفسه حتى لو كان أدمن
+            filtered_users[uid] = user_data
     
-    text = "🏆 توب النقاط:\n\n"
-    for i, (uid, points, username) in enumerate(users_points[:10], 1):
-        text += f"{i}. @{username}: {points} نقطة\n"
+    # 1. أعلى 10 نقاط (باستثناء الأدمن)
+    users_points = []
+    for uid, data in filtered_users.items():
+        username = data.get("username", "")
+        first_name = data.get("first_name", "مجهول")
+        last_name = data.get("last_name", "")
+        points = data.get("points", 0)
+        invites = data.get("invites", 0)
+        
+        # تحديد الاسم المعروض
+        if first_name and first_name != "مجهول":
+            display_name = first_name
+            # إضافة اللقب إذا موجود
+            if last_name:
+                display_name = f"{first_name} {last_name}"
+        else:
+            # إذا لم يكن هناك اسم، نستخدم الآيدي
+            display_name = f"المستخدم {uid[:8]}"
+        
+        # التحقق إذا كان أدمن (للتلوين)
+        is_admin_user = str(uid) in admins
+        
+        users_points.append({
+            "id": uid,
+            "username": username,
+            "display_name": display_name,
+            "points": points,
+            "invites": invites,
+            "is_admin": is_admin_user,
+            "first_name": first_name
+        })
     
-    keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data="back_main")]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    # ترتيب حسب النقاط (تنازلي)
+    users_points.sort(key=lambda x: x["points"], reverse=True)
+    
+    # 2. أعلى 10 دعوات (باستثناء الأدمن)
+    users_invites = sorted(users_points.copy(), key=lambda x: x["invites"], reverse=True)
+    
+    # إنشاء النص
+    text = "🏆 **لوحة المتصدرين** 🏆\n\n"
+    text += "👑 *ملاحظة:* الأدمن مستبعدون من التوب\n\n"
+    
+    # قسم النقاط
+    text += "💰 **أعلى 10 نقاط:**\n"
+    for i, user in enumerate(users_points[:10], 1):
+        medal = ""
+        if i == 1: medal = "🥇"
+        elif i == 2: medal = "🥈"
+        elif i == 3: medal = "🥉"
+        else: medal = f"{i}."
+        
+        # تحديد طريقة الربط
+        if user["username"] and user["username"] != "" and user["username"] != "بدون":
+            # إذا لديه يوزر: رابط مباشر ليوزر التليجرام
+            user_link = f"https://t.me/{user['username']}"
+            name_part = f"[{user['display_name']}]({user_link})"
+        else:
+            # إذا ليس لديه يوزر: رابط عبر user_id
+            user_link = f"tg://user?id={user['id']}"
+            name_part = f"[{user['display_name']}]({user_link})"
+        
+        # إضافة تاج إذا كان أدمن (فقط إذا كان المستخدم نفسه)
+        admin_badge = " 👑" if user["is_admin"] and str(user["id"]) == str(query.from_user.id) else ""
+        
+        text += f"{medal} {name_part}{admin_badge} - **{user['points']} نقطة**\n"
+    
+    text += "\n" + "─" * 30 + "\n\n"
+    
+    # قسم الدعوات
+    text += "👥 **أعلى 10 دعوات:**\n"
+    for i, user in enumerate(users_invites[:10], 1):
+        medal = ""
+        if i == 1: medal = "👑"
+        elif i == 2: medal = "🥈"
+        elif i == 3: medal = "🥉"
+        else: medal = f"{i}."
+        
+        # تحديد طريقة الربط
+        if user["username"] and user["username"] != "" and user["username"] != "بدون":
+            # إذا لديه يوزر: رابط مباشر ليوزر التليجرام
+            user_link = f"https://t.me/{user['username']}"
+            name_part = f"[{user['display_name']}]({user_link})"
+        else:
+            # إذا ليس لديه يوزر: رابط عبر user_id
+            user_link = f"tg://user?id={user['id']}"
+            name_part = f"[{user['display_name']}]({user_link})"
+        
+        # إضافة تاج إذا كان أدمن (فقط إذا كان المستخدم نفسه)
+        admin_badge = " 👑" if user["is_admin"] and str(user["id"]) == str(query.from_user.id) else ""
+        
+        text += f"{medal} {name_part}{admin_badge} - **{user['invites']} دعوة**\n"
+    
+    # إضافة زر تحديث
+    keyboard = [
+        [InlineKeyboardButton("🔄 تحديث التوب", callback_data="top")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_main")]
+    ]
+    
+    try:
+        await query.edit_message_text(
+            text, 
+            reply_markup=InlineKeyboardMarkup(keyboard), 
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logger.error(f"خطأ في عرض التوب: {e}")
+        # إذا فشل التعديل، أرسل رسالة جديدة
+        await query.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
+
+# ===================== نسخة بديلة مع أزرار =====================
+
+
 
 async def show_invite_link(query, user_id, bot):
     """عرض رابط الدعوة"""
@@ -6212,104 +6617,280 @@ async def handle_admin_commands(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(text_response, parse_mode="HTML")
 
 async def show_detailed_stats(query):
-    """إحصائيات مفصلة"""
-    stats = get_user_statistics()
-    
-    if not stats:
-        await query.answer("❌ خطأ في جلب الإحصائيات", show_alert=True)
-        return
-    
-    data = load_data()
-    
-    # معلومات الأكواد
-    codes = data.get("codes", {})
-    active_codes = 0
-    completed_codes = 0
-    total_code_points = 0
-    
-    for code_data in codes.values():
-        used_count = code_data.get("used_count", 0)
-        max_uses = code_data.get("max_uses", 0)
-        points = code_data.get("points", 0)
+    """إحصائيات مفصلة وشاملة لكل شيء في البوت"""
+    try:
+        # تحميل جميع البيانات
+        stats = get_user_statistics()
+        data = load_data()
+        users_data = load_users()
+        channels = data.get("channels", {})
+        codes = data.get("codes", {})
         
-        total_code_points += points * min(used_count, max_uses)
+        if not stats:
+            await query.answer("❌ خطأ في جلب الإحصائيات", show_alert=True)
+            return
         
-        if used_count >= max_uses:
-            completed_codes += 1
-        else:
-            active_codes += 1
-    
-    # معلومات القنوات
-    channels = data.get("channels", {})
-    active_channels = 0
-    completed_channels = 0
-    total_channel_points = 0
-    
-    for channel_data in channels.values():
-        if channel_data.get("completed"):
-            completed_channels += 1
-            total_channel_points += channel_data.get("required", 0) * 3
-        else:
-            active_channels += 1
-    
-    # معلومات اليوم
-    today = datetime.now().date()
-    users_data = load_users()
-    today_activity = []
-    
-    for uid, user_data in users_data.items():
-        last_active_str = user_data.get("last_active", "")
-        if last_active_str:
-            try:
-                last_active_date = datetime.strptime(last_active_str, "%Y-%m-%d %H:%M:%S").date()
-                if last_active_date == today:
-                    today_activity.append({
-                        "username": user_data.get("username", "بدون"),
-                        "points": user_data.get("points", 0)
-                    })
-            except:
-                pass
-    
-    text = (
-        f"📊 إحصائيات مفصلة:\n\n"
+        # === 1. إحصائيات المستخدمين التفصيلية ===
+        user_stats = {
+            "total": len(users_data),
+            "with_username": stats['with_username'],
+            "without_username": stats['total_users'] - stats['with_username'],
+            "with_invites": stats['with_invites'],
+            "zero_points": 0,
+            "negative_points": 0,
+            "positive_points": 0,
+            "new_today": stats['new_today'],
+            "new_week": stats['new_week'],
+            "new_month": stats['new_month'],
+            "banned": stats['banned_users'],
+            "muted": stats['muted_users']
+        }
         
-        f"👥 المستخدمين:\n"
-        f"• الإجمالي: {stats['total_users']}\n"
-        f"• النشطين اليوم: {len(today_activity)}\n"
-        f"• أعلى 5 نشطين اليوم:\n"
-    )
-    
-    # عرض أعلى 5 مستخدمين نشاطاً
-    today_activity_sorted = sorted(today_activity, key=lambda x: x['points'], reverse=True)[:5]
-    for i, user in enumerate(today_activity_sorted, 1):
-        text += f"   {i}. @{user['username']}: {user['points']} نقطة\n"
-    
-    text += (
-        f"\n🎟️ الأكواد:\n"
-        f"• النشطة: {active_codes}\n"
-        f"• المكتملة: {completed_codes}\n"
-        f"• نقاط الأكواد: {total_code_points}\n\n"
+        # تحليل النقاط
+        total_points_sum = 0
+        for uid, user_data in users_data.items():
+            points = user_data.get("points", 0)
+            total_points_sum += points
+            
+            if points < 0:
+                user_stats["negative_points"] += 1
+            elif points == 0:
+                user_stats["zero_points"] += 1
+            else:
+                user_stats["positive_points"] += 1
         
-        f"📢 القنوات:\n"
-        f"• الإجمالي: {len(channels)}\n"
-        f"• النشطة: {active_channels}\n"
-        f"• المكتملة: {completed_channels}\n"
-        f"• نقاط القنوات: {total_channel_points}\n\n"
+        # === 2. إحصائيات القنوات التفصيلية ===
+        channel_stats = {
+            "total": len(channels),
+            "active": 0,
+            "completed": 0,
+            "by_owner": defaultdict(int),
+            "by_size": defaultdict(int),
+            "total_required": 0,
+            "total_current": 0,
+            "reused": 0,
+            "admin_added": 0,
+            "user_added": 0
+        }
         
-        f"💰 إحصائيات مالية:\n"
-        f"• إجمالي النقاط: {stats['total_points']}\n"
-        f"• مجموع الدعوات: {stats['total_invites']}\n"
-        f"• نقاط الهدايا: {get_stat('total_daily_gifts', 0) * 3}\n"
-        f"• نقاط المشتريات: {get_stat('total_purchases', 0) * 2}\n"
-    )
-    
-    keyboard = [
-        [InlineKeyboardButton("🔄 تحديث", callback_data="admin_stats_detailed"),
-         InlineKeyboardButton("📈 رسم بياني", callback_data="admin_stats_graph")],
-        [InlineKeyboardButton("🔙 رجوع للوحة", callback_data="admin_panel")]
-    ]
-    
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        for channel_id, channel_data in channels.items():
+            # الحالة
+            if channel_data.get("completed"):
+                channel_stats["completed"] += 1
+            else:
+                channel_stats["active"] += 1
+            
+            # المالك
+            owner = channel_data.get("owner", "unknown")
+            channel_stats["by_owner"][owner] += 1
+            
+            # الحجم
+            required = channel_data.get("required", 0)
+            current = channel_data.get("current", 0)
+            channel_stats["total_required"] += required
+            channel_stats["total_current"] += current
+            
+            # فئات الأحجام
+            if required <= 10:
+                channel_stats["by_size"]["صغيرة (≤10)"] += 1
+            elif required <= 50:
+                channel_stats["by_size"]["متوسطة (11-50)"] += 1
+            elif required <= 100:
+                channel_stats["by_size"]["كبيرة (51-100)"] += 1
+            else:
+                channel_stats["by_size"]["ضخمة (>100)"] += 1
+            
+            # الإعادة استخدام
+            reuse_count = channel_data.get("reuse_count", 0)
+            if reuse_count > 0:
+                channel_stats["reused"] += 1
+            
+            # النوع
+            if channel_data.get("admin_added"):
+                channel_stats["admin_added"] += 1
+            else:
+                channel_stats["user_added"] += 1
+        
+        # === 3. إحصائيات الأكواد ===
+        code_stats = {
+            "total": len(codes),
+            "active": 0,
+            "completed": 0,
+            "total_points": 0,
+            "used_points": 0,
+            "remaining_points": 0,
+            "avg_points": 0
+        }
+        
+        for code_name, code_data in codes.items():
+            points = code_data.get("points", 0)
+            max_uses = code_data.get("max_uses", 0)
+            used_count = code_data.get("used_count", 0)
+            
+            code_stats["total_points"] += points * max_uses
+            code_stats["used_points"] += points * used_count
+            
+            if used_count >= max_uses:
+                code_stats["completed"] += 1
+            else:
+                code_stats["active"] += 1
+        
+        if code_stats["total"] > 0:
+            code_stats["remaining_points"] = code_stats["total_points"] - code_stats["used_points"]
+            code_stats["avg_points"] = code_stats["total_points"] / code_stats["total"]
+        
+        # === 4. إحصائيات النظام ===
+        system_stats = {
+            "database_size": os.path.getsize(DB_NAME) if os.path.exists(DB_NAME) else 0,
+            "backup_count": len(os.listdir("backups")) if os.path.exists("backups") else 0,
+            "log_size": os.path.getsize("bot_debug.log") if os.path.exists("bot_debug.log") else 0,
+            "uptime": int(time.time() - start_time) if 'start_time' in globals() else 0,
+            "active_locks": len(_active_locks),
+            "cached_users": len(_data_cache)
+        }
+        
+        # === 5. إحصائيات المكافآت والعقوبات ===
+        reward_stats = {
+            "daily_gifts": get_stat('total_daily_gifts') or 0,
+            "invite_points": stats['total_invites'] * 4,
+            "channel_points": channel_stats["total_current"] * 3,
+            "code_points": code_stats["used_points"],
+            "total_earned": 0,
+            "total_spent": 0,
+            "penalties": 0
+        }
+        
+        # حساب الإجمالي
+        reward_stats["total_earned"] = (
+            (reward_stats["daily_gifts"] * 3) +
+            reward_stats["invite_points"] +
+            reward_stats["channel_points"] +
+            reward_stats["code_points"]
+        )
+        
+        # حساب الصرف والعقوبات من المستخدمين
+        for uid, user_data in users_data.items():
+            reward_stats["total_spent"] += user_data.get("total_spent", 0)
+            # يمكن إضافة العقوبات هنا إذا كانت مخزنة
+        
+        # === 6. النسب المئوية ===
+        percentages = {
+            "users_with_username": (user_stats["with_username"] / max(user_stats["total"], 1)) * 100,
+            "channels_completed": (channel_stats["completed"] / max(channel_stats["total"], 1)) * 100,
+            "codes_used": (code_stats["used_points"] / max(code_stats["total_points"], 1)) * 100,
+            "channel_progress": (channel_stats["total_current"] / max(channel_stats["total_required"], 1)) * 100,
+            "users_active_today": (stats['active_users'] / max(user_stats["total"], 1)) * 100
+        }
+        
+        # === بناء التقرير ===
+        text = "📊 **إحصائيات البوت الشاملة**\n\n"
+        
+        # 1. قسم المستخدمين
+        text += "👥 **المستخدمين:**\n"
+        text += f"• الإجمالي: {user_stats['total']} مستخدم\n"
+        text += f"• باليوزر: {user_stats['with_username']} ({percentages['users_with_username']:.1f}%)\n"
+        text += f"• بدون يوزر: {user_stats['without_username']}\n"
+        text += f"• نقاط إيجابية: {user_stats['positive_points']}\n"
+        text += f"• نقاط سالبة: {user_stats['negative_points']}\n"
+        text += f"• نقاط صفر: {user_stats['zero_points']}\n"
+        text += f"• دعوات: {user_stats['with_invites']}\n"
+        text += f"• المحظورين: {user_stats['banned']}\n"
+        text += f"• المكتومين: {user_stats['muted']}\n\n"
+        
+        text += f"📈 **النمو:**\n"
+        text += f"• جدد اليوم: {user_stats['new_today']}\n"
+        text += f"• جدد الأسبوع: {user_stats['new_week']}\n"
+        text += f"• جدد الشهر: {user_stats['new_month']}\n"
+        text += f"• نشطين اليوم: {stats['active_users']} ({percentages['users_active_today']:.1f}%)\n\n"
+        
+        # 2. قسم القنوات
+        text += "📢 **القنوات:**\n"
+        text += f"• الإجمالي: {channel_stats['total']} قناة\n"
+        text += f"• النشطة: {channel_stats['active']}\n"
+        text += f"• المكتملة: {channel_stats['completed']} ({percentages['channels_completed']:.1f}%)\n"
+        text += f"• المستخدمة مجدداً: {channel_stats['reused']}\n"
+        text += f"• المضافة من الأدمن: {channel_stats['admin_added']}\n"
+        text += f"• المضافة من المستخدمين: {channel_stats['user_added']}\n\n"
+        
+        text += f"📊 **أحجام القنوات:**\n"
+        for size, count in channel_stats['by_size'].items():
+            text += f"• {size}: {count}\n"
+        
+        text += f"\n🎯 **تقدم القنوات:**\n"
+        text += f"• الإجمالي المطلوب: {channel_stats['total_required']} عضو\n"
+        text += f"• الإجمالي الحالي: {channel_stats['total_current']} عضو\n"
+        text += f"• نسبة التقدم: {percentages['channel_progress']:.1f}%\n"
+        text += f"• المتبقي: {channel_stats['total_required'] - channel_stats['total_current']} عضو\n\n"
+        
+        # 3. قسم الأكواد
+        text += "🎟️ **الأكواد:**\n"
+        text += f"• الإجمالي: {code_stats['total']} كود\n"
+        text += f"• النشطة: {code_stats['active']}\n"
+        text += f"• المكتملة: {code_stats['completed']}\n"
+        text += f"• متوسط النقاط: {code_stats['avg_points']:.1f}\n"
+        text += f"• إجمالي النقاط: {code_stats['total_points']}\n"
+        text += f"• المستخدمة: {code_stats['used_points']} ({percentages['codes_used']:.1f}%)\n"
+        text += f"• المتبقية: {code_stats['remaining_points']}\n\n"
+        
+        # 4. قسم المالية
+        text += "💰 **المالية:**\n"
+        text += f"• إجمالي النقاط في النظام: {stats['total_points']}\n"
+        text += f"• إجمالي الدعوات: {stats['total_invites']}\n"
+        text += f"• أرباح الدعوات: {reward_stats['invite_points']}\n"
+        text += f"• أرباح القنوات: {reward_stats['channel_points']}\n"
+        text += f"• أرباح الأكواد: {reward_stats['code_points']}\n"
+        text += f"• أرباح الهدايا: {reward_stats['daily_gifts'] * 3}\n"
+        text += f"• **الإجمالي المكتسب:** {reward_stats['total_earned']} نقطة\n"
+        text += f"• **الإجمالي المصروف:** {reward_stats['total_spent']} نقطة\n"
+        text += f"• **الرصيد الصافي:** {reward_stats['total_earned'] - reward_stats['total_spent']} نقطة\n\n"
+        
+        # 5. قسم النظام
+        text += "⚙️ **النظام:**\n"
+        text += f"• حجم قاعدة البيانات: {system_stats['database_size'] / (1024*1024):.2f} ميجابايت\n"
+        text += f"• نسخ احتياطية: {system_stats['backup_count']}\n"
+        text += f"• حجم السجلات: {system_stats['log_size'] / 1024:.2f} كيلوبايت\n"
+        
+        if system_stats['uptime'] > 0:
+            hours = system_stats['uptime'] // 3600
+            minutes = (system_stats['uptime'] % 3600) // 60
+            seconds = system_stats['uptime'] % 60
+            text += f"• وقت التشغيل: {hours}:{minutes:02d}:{seconds:02d}\n"
+        
+        text += f"• الأقفال النشطة: {system_stats['active_locks']}\n"
+        text += f"• المستخدمين في الذاكرة: {system_stats['cached_users']}\n\n"
+        
+        # 6. معلومات السيرفر
+        text += "🖥️ **السيرفر:**\n"
+        try:
+            import psutil
+            cpu_percent = psutil.cpu_percent()
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+            
+            text += f"• استخدام CPU: {cpu_percent:.1f}%\n"
+            text += f"• استخدام الرام: {memory.percent:.1f}%\n"
+            text += f"• استخدام القرص: {disk.percent:.1f}%\n"
+        except:
+            text += "• معلومات السيرفر غير متوفرة\n"
+        
+        text += f"• الوقت الحالي: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        
+        # الأزرار
+        keyboard = [
+            [InlineKeyboardButton("🔄 تحديث", callback_data="admin_stats_detailed"),
+             InlineKeyboardButton("📊 إحصائيات مختصرة", callback_data="admin_stats")],
+            [InlineKeyboardButton("📈 رسم بياني", callback_data="admin_stats_graph")],
+            [InlineKeyboardButton("📋 تقرير المراقبة", callback_data="admin_monitor_report")],
+            [InlineKeyboardButton("🔙 رجوع للوحة", callback_data="admin_panel")]
+        ]
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        
+    except Exception as e:
+        logger.error(f"❌ خطأ في show_detailed_stats: {e}")
+        import traceback
+        traceback.print_exc()
+        await query.answer("⚠️ حدث خطأ في جلب الإحصائيات", show_alert=True)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة الأخطاء"""
@@ -6535,6 +7116,12 @@ def main():
             first=30,       # بعد 30 ثانية
             name="send_db_backup"
         )
+        application.job_queue.run_repeating(
+            lambda context: cleanup_member_cache(),
+            interval=60,    # دقيقة
+            first=20,       # بعد 20 ثانية
+            name="cleanup_member_cache"
+        )        
 
         # ================== معلومات التشغيل ==================
         logger.info("=" * 70)
