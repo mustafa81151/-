@@ -1276,12 +1276,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not can_use:
         return
     
-    # ✅✅✅ حفظ حالة المستخدم الجديد قبل أي تحديث ✅✅✅
-    users_data = load_users()
-    is_new_user = (user_id not in users_data)  # هذا هو التصحيح الأساسي
+    # ✅✅✅ الحصول على بيانات المستخدمين قبل أي تحديث
+    users_data_before = load_users()  # حفظ نسخة قبل التحديث
+    is_new_user_before = (user_id not in users_data_before)
     
     # 🔢 حساب رقم المستخدم الترتيبي (فقط للمستخدمين الجدد)
-    user_number = len(users_data) + 1 if is_new_user else None
+    user_number = len(users_data_before) + 1 if is_new_user_before else None
     
     # الآن يمكن تحديث البيانات
     user_data = get_user_data(user_id)
@@ -1295,7 +1295,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     
     # إذا كان مستخدم جديد، أضف وقت الانضمام الأول
-    if is_new_user:
+    if is_new_user_before:
         updates["first_join"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         updates["points"] = 0
         updates["invites"] = 0
@@ -1304,124 +1304,140 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     update_user_data(user_id, updates, "user_info_update")
     
-    # ✅✅✅ معالجة الإحالة - فقط للمستخدمين الجدد ✅✅✅
-    if context.args and is_new_user:  # ✅✅✅ هذا هو التصحيح: is_new_user بدلاً من not is_new_user
+    # ✅✅✅ معالجة الإحالة - التصحيح الأساسي ✅✅✅
+    if context.args and is_new_user_before:  # ✅ استخدم is_new_user_before
         ref_id = context.args[0]
         
         # إعادة تحميل users_data للتأكد من أحدث البيانات
-        users_data = load_users()
+        users_data_after = load_users()
         
-        if ref_id != user_id and ref_id in users_data:
-            # تحميل بيانات المُحيل
-            ref_data = get_user_data(ref_id, force_reload=True)
-            invited_users = ref_data.get("invited_users", [])
-            
-            # تأكد من أن المستخدم ليس في قائمة المدعوين
-            if user_id not in invited_users:
-                old_points = ref_data.get("points", 0)
-                old_invites = ref_data.get("invites", 0)
-                
-                # منح النقاط للمحيل (4 نقاط)
-                success, message = safe_add_points(ref_id, 4, "add", "invite_points")
-                if success:
-                    new_points = old_points + 4
-                    new_invites = old_invites + 1
-                    
-                    # تحديث قائمة المدعوين
-                    invited_users.append(user_id)
-                    update_user_data(ref_id, {
-                        "invites": new_invites,
-                        "invited_users": invited_users
-                    }, "invite_update")
-                    
-                    # تحديث إحصائيات النظام
-                    update_system_stats("total_invites", increment=1)
-                    
-                    # 🔔 1. إشعار لصاحب رابط الإحالة
-                    try:
-                        await context.bot.send_message(
-                            int(ref_id),
-                            f"🎉 شخص جديد دخل عبر رابط دعوتك!\n\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"👤 معلومات الشخص الجديد:\n"
-                            f"• اليوزر: @{user.username or 'بدون يوزر'}\n"
-                            f"• الآيدي: <code>{user_id}</code>\n"
-                            f"• الاسم: {user.first_name} {user.last_name or ''}\n\n"
-                            f"💰 مكافأتك:\n"
-                            f"• حصلت على: 4 نقاط ✨\n"
-                            f"• نقاطك قبل: {old_points}\n"
-                            f"• نقاطك الآن: {new_points} 🎯\n\n"
-                            f"🔗 إحصائياتك:\n"
-                            f"• إجمالي دعواتك: {new_invites} شخص\n"
-                            f"• أرباحك من الدعوات: {new_invites * 4} نقطة\n\n"
-                            f"📅 الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                            f"🚀 استمر في دعوة الأصدقاء لزيادة نقاطك!",
-                            parse_mode="HTML"
-                        )
-                    except Exception as e:
-                        logger.error(f"خطأ في إرسال إشعار الإحالة لـ {ref_id}: {e}")
-                    
-                    # 🔔 2. إشعار لمالك البوت عن الإحالة
-                    try:
-                        ref_username = users_data[ref_id].get("username", "بدون يوزر")
-                        ref_first_name = users_data[ref_id].get("first_name", "غير معروف")
-                        
-                        await context.bot.send_message(
-                            ADMIN_ID,
-                            f"🔗 إحالة جديدة في البوت!\n\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"👤 المُحيل:\n"
-                            f"• الاسم: {ref_first_name}\n"
-                            f"• اليوزر: @{ref_username}\n"
-                            f"• الآيدي: <code>{ref_id}</code>\n"
-                            f"• نقاطه قبل: {old_points}\n"
-                            f"• نقاطه الآن: {new_points} (+4)\n"
-                            f"• إجمالي دعواته: {new_invites} شخص\n\n"
-                            f"👥 الشخص الجديد:\n"
-                            f"• الاسم: {user.first_name} {user.last_name or ''}\n"
-                            f"• اليوزر: @{user.username or 'بدون يوزر'}\n"
-                            f"• الآيدي: <code>{user_id}</code>\n\n"
-                            f"💰 المكافأة:\n"
-                            f"• تم إضافة 4 نقاط للمُحيل ✅\n\n"
-                            f"📅 التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                            f"━━━━━━━━━━━━━━━━━━━━",
-                            parse_mode="HTML"
-                        )
-                    except Exception as e:
-                        logger.error(f"❌ خطأ في إرسال إشعار الإحالة للمالك: {e}")
-                else:
-                    logger.error(f"❌ فشل إضافة نقاط الإحالة للمستخدم {ref_id}: {message}")
-            else:
-                logger.info(f"⚠️ المستخدم {user_id} موجود بالفعل في قائمة المدعوين للمُحيل {ref_id}")
+        # التحقق من صحة رابط الإحالة
+        if ref_id == user_id:
+            logger.info(f"⚠️ المستخدم {user_id} حاول استخدام رابط دعوته الخاص")
+        elif ref_id not in users_data_after:
+            logger.info(f"⚠️ رابط إحالة غير صحيح: {ref_id}")
         else:
-            # حالات لا تستحق المكافأة
-            if ref_id == user_id:
-                logger.info(f"⚠️ المستخدم {user_id} حاول استخدام رابط دعوته الخاص")
-            elif ref_id not in users_data:
-                logger.info(f"⚠️ رابط إحالة غير صحيح: {ref_id}")
-    elif context.args and not is_new_user:
+            # المستخدم الجديد ورابط الإحالة صحيح
+            ref_data = get_user_data(ref_id, force_reload=True)
+            
+            # ✅ التحقق أن المُحيل ليس هو المستخدم نفسه
+            if str(ref_id) != str(user_id):
+                invited_users = ref_data.get("invited_users", [])
+                
+                # ✅ التحقق من عدم تكرار الإحالة
+                if user_id not in invited_users:
+                    old_points = ref_data.get("points", 0)
+                    old_invites = ref_data.get("invites", 0)
+                    
+                    # ✅ منح 4 نقاط للمحيل
+                    success, message = safe_add_points(ref_id, 4, "add", "invite_reward")
+                    
+                    if success:
+                        new_points = old_points + 4
+                        new_invites = old_invites + 1
+                        
+                        # تحديث قائمة المدعوين
+                        invited_users.append(user_id)
+                        update_user_data(ref_id, {
+                            "invites": new_invites,
+                            "invited_users": invited_users,
+                            "last_invite_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }, "invite_update")
+                        
+                        # ✅ تحديث إحصائيات النظام
+                        update_system_stats("total_invites", increment=1)
+                        update_system_stats("total_invite_points", increment=4)
+                        
+                        # 🔔 إشعار لصاحب رابط الإحالة
+                        try:
+                            ref_username = users_data_after[ref_id].get("username", "بدون يوزر")
+                            ref_name = users_data_after[ref_id].get("first_name", "صديقك")
+                            
+                            await context.bot.send_message(
+                                int(ref_id),
+                                f"🎊 **تهانينا! شخص جديد دخل عبر رابطك!**\n\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"👤 **معلومات الشخص الجديد:**\n"
+                                f"• الاسم: {user.first_name} {user.last_name or ''}\n"
+                                f"• اليوزر: @{user.username or 'بدون'}\n"
+                                f"• الآيدي: `{user_id}`\n\n"
+                                f"💰 **مكافأتك:**\n"
+                                f"• حصلت على: 4 نقاط 💎\n"
+                                f"• نقاطك قبل: {old_points}\n"
+                                f"• نقاطك الآن: {new_points}\n\n"
+                                f"📊 **إحصائيات دعواتك:**\n"
+                                f"• إجمالي دعواتك: {new_invites} شخص\n"
+                                f"• أرباحك من الدعوات: {new_invites * 4} نقطة\n\n"
+                                f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                                f"🎯 استمر في دعوة الأصدقاء لزيادة نقاطك!",
+                                parse_mode="HTML"
+                            )
+                            logger.info(f"✅ تم إرسال إشعار الإحالة لـ {ref_id}")
+                        except Exception as e:
+                            logger.error(f"❌ خطأ في إرسال إشعار الإحالة لـ {ref_id}: {e}")
+                        
+                        # 🔔 إشعار لمالك البوت
+                        try:
+                            await context.bot.send_message(
+                                ADMIN_ID,
+                                f"🔗 **إحالة جديدة في البوت!**\n\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"👤 **المُحيل:**\n"
+                                f"• الاسم: {ref_name}\n"
+                                f"• اليوزر: @{ref_username}\n"
+                                f"• الآيدي: `{ref_id}`\n"
+                                f"• نقاطه قبل: {old_points}\n"
+                                f"• نقاطه الآن: {new_points} (+4)\n"
+                                f"• دعواته: {old_invites} → {new_invites}\n\n"
+                                f"👥 **الشخص الجديد:**\n"
+                                f"• الاسم: {user.first_name} {user.last_name or ''}\n"
+                                f"• اليوزر: @{user.username or 'بدون'}\n"
+                                f"• الآيدي: `{user_id}`\n\n"
+                                f"💰 **المكافأة الممنوحة:**\n"
+                                f"• 4 نقاط للمُحيل ✅\n\n"
+                                f"⏰ **التاريخ:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━",
+                                parse_mode="HTML"
+                            )
+                        except Exception as e:
+                            logger.error(f"❌ خطأ في إرسال إشعار للمالك: {e}")
+                        
+                        # 🔔 إشعار للمستخدم الجديد
+                        try:
+                            await update.message.reply_text(
+                                f"🎉 **أهلاً بك!**\n\n"
+                                f"✅ لقد دخلت عبر رابط دعوة صديق\n"
+                                f"✨ صديقك حصل على 4 نقاط مكافأة\n"
+                                f"💎 يمكنك الآن:\n"
+                                f"• جمع النقاط من القنوات\n"
+                                f"• الحصول على الهدية اليومية\n"
+                                f"• إنشاء رابط دعوة خاص بك\n\n"
+                                f"🚀 استمتع بتجربتك في البوت!",
+                                parse_mode="HTML"
+                            )
+                        except Exception as e:
+                            logger.error(f"❌ خطأ في إرسال رسالة ترحيب للمستخدم الجديد: {e}")
+                    else:
+                        logger.error(f"❌ فشل إضافة نقاط الإحالة للمستخدم {ref_id}: {message}")
+                else:
+                    logger.info(f"⚠️ المستخدم {user_id} موجود بالفعل في قائمة المدعوين للمُحيل {ref_id}")
+    elif context.args and not is_new_user_before:
         # المستخدم قديم يحاول استخدام رابط إحالة
         logger.info(f"⚠️ المستخدم {user_id} دخل عبر رابط إحالة ولكنه مستخدم قديم")
     
-    # ✅ إشعار المالك عن المستخدم الجديد مع الرقم الترتيبي (فقط عند أول دخول)
-    if is_new_user:
-        # الحصول على إحصائيات
+    # ✅ إشعار المالك عن المستخدم الجديد
+    if is_new_user_before:
         stats = get_user_statistics()
         stats_text = ""
         if stats:
-            # حساب نسبة النمو الصحيحة
-            yesterday_users = user_number - stats.get('new_today', 0)
-            growth_rate = (stats.get('new_today', 0) / max(1, yesterday_users)) * 100
-            
             stats_text = (
-                f"📊 إحصائيات البوت الحالية:\n"
+                f"📊 **إحصائيات البوت الحالية:**\n"
                 f"• إجمالي المستخدمين: {stats.get('total_users', 0)}\n"
                 f"• المستخدمين النشطين اليوم: {stats.get('active_users', 0)}\n"
                 f"• الجدد اليوم: {stats.get('new_today', 0)}\n"
                 f"• الجدد الأسبوع: {stats.get('new_week', 0)}\n"
                 f"• الجدد الشهر: {stats.get('new_month', 0)}\n"
-                f"• نسبة النمو اليوم: {growth_rate:.1f}%\n"
                 f"• المستخدمين باليوزر: {stats.get('with_username', 0)}\n"
                 f"• المستخدمين بالدعوات: {stats.get('with_invites', 0)}\n"
                 f"• النقاط الإجمالية: {stats.get('total_points', 0)}\n"
@@ -1429,49 +1445,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         admin_msg = (
-            f"👤 دخول جديد للبوت!\n\n"
+            f"👤 **دخول جديد للبوت!**\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔢 رقم المستخدم: {user_number}\n"
-            f"🆔 ID: <code>{user_id}</code>\n"
-            f"👤 يوزر: @{user.username or 'بدون'}\n"
-            f"📛 الاسم: {user.first_name} {user.last_name or ''}\n"
-            f"🌐 اللغة: {user.language_code or 'غير معروف'}\n"
-            f"📅 التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"🔢 **رقم المستخدم:** {user_number}\n"
+            f"🆔 **ID:** `{user_id}`\n"
+            f"👤 **يوزر:** @{user.username or 'بدون'}\n"
+            f"📛 **الاسم:** {user.first_name} {user.last_name or ''}\n"
+            f"🌐 **اللغة:** {user.language_code or 'غير معروف'}\n"
+            f"📅 **التاريخ:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{stats_text}"
             f"━━━━━━━━━━━━━━━━━━━━"
         )
         
-        # إرسال الإشعار مرة واحدة فقط للمستخدمين الجدد
         await send_to_admin(context.bot, admin_msg)
-        
-        # 🔔 إشعار للمستخدم الجديد أنه دخل عبر رابط دعوة
-        if context.args:
-            await update.message.reply_text(
-                f"👋 أهلاً بك {user.first_name}!\n\n"
-                f"✅ لقد دخلت عبر رابط دعوة صديق\n"
-                f"✨ صديقك حصل على 4 نقاط مكافأة\n"
-                f"🎉 أنت الآن عضو في البوت!\n\n"
-                f"💡 يمكنك الآن:\n"
-                f"• جمع النقاط من القنوات\n"
-                f"• الحصول على الهدية اليومية\n"
-                f"• إنشاء رابط دعوة خاص بك\n\n"
-                f"🚀 استمتع بتجربتك!",
-                parse_mode="HTML"
-            )
     
     # رسالة الترحيب العادية
     welcome_msg = (
         f"👋 أهلاً وسهلاً {user.first_name}!\n\n"
-        f"🌟 مرحباً بك في بوت خدمات القنوات 🌟\n\n"
-        f"📌 كيفية عمل البوت:\n"
+        f"🌟 **مرحباً بك في بوت خدمات القنوات** 🌟\n\n"
+        f"📌 **كيفية عمل البوت:**\n"
         f"1️⃣ ادخل على المتجر واشترِ أعضاء لقناتك\n"
         f"2️⃣ شارك رابط دعوتك مع أصدقائك واحصل على نقاط\n"
         f"3️⃣ انضم للقنوات في قسم التجميع واحصل على نقاط\n"
         f"4️⃣ استخدم نقاطك لشراء أعضاء جدد\n\n"
-        f"📢 قناة البوت الرسمية: {BOT_CHANNEL}\n"
-        f"🎯 لديك: {user_data['points']} نقطة\n"
-        f"🔗 دعوت: {user_data['invites']} شخص\n\n"
+        f"📢 **قناة البوت الرسمية:** {BOT_CHANNEL}\n"
+        f"🎯 **لديك:** {user_data.get('points', 0)} نقطة\n"
+        f"🔗 **دعوت:** {user_data.get('invites', 0)} شخص\n\n"
         f"اختر من القائمة:"
     )
     
@@ -6617,280 +6617,104 @@ async def handle_admin_commands(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(text_response, parse_mode="HTML")
 
 async def show_detailed_stats(query):
-    """إحصائيات مفصلة وشاملة لكل شيء في البوت"""
-    try:
-        # تحميل جميع البيانات
-        stats = get_user_statistics()
-        data = load_data()
-        users_data = load_users()
-        channels = data.get("channels", {})
-        codes = data.get("codes", {})
+    """إحصائيات مفصلة"""
+    stats = get_user_statistics()
+    
+    if not stats:
+        await query.answer("❌ خطأ في جلب الإحصائيات", show_alert=True)
+        return
+    
+    data = load_data()
+    
+    # معلومات الأكواد
+    codes = data.get("codes", {})
+    active_codes = 0
+    completed_codes = 0
+    total_code_points = 0
+    
+    for code_data in codes.values():
+        used_count = code_data.get("used_count", 0)
+        max_uses = code_data.get("max_uses", 0)
+        points = code_data.get("points", 0)
         
-        if not stats:
-            await query.answer("❌ خطأ في جلب الإحصائيات", show_alert=True)
-            return
+        total_code_points += points * min(used_count, max_uses)
         
-        # === 1. إحصائيات المستخدمين التفصيلية ===
-        user_stats = {
-            "total": len(users_data),
-            "with_username": stats['with_username'],
-            "without_username": stats['total_users'] - stats['with_username'],
-            "with_invites": stats['with_invites'],
-            "zero_points": 0,
-            "negative_points": 0,
-            "positive_points": 0,
-            "new_today": stats['new_today'],
-            "new_week": stats['new_week'],
-            "new_month": stats['new_month'],
-            "banned": stats['banned_users'],
-            "muted": stats['muted_users']
-        }
+        if used_count >= max_uses:
+            completed_codes += 1
+        else:
+            active_codes += 1
+    
+    # معلومات القنوات
+    channels = data.get("channels", {})
+    active_channels = 0
+    completed_channels = 0
+    total_channel_points = 0
+    
+    for channel_data in channels.values():
+        if channel_data.get("completed"):
+            completed_channels += 1
+            total_channel_points += channel_data.get("required", 0) * 3
+        else:
+            active_channels += 1
+    
+    # معلومات اليوم
+    today = datetime.now().date()
+    users_data = load_users()
+    today_activity = []
+    
+    for uid, user_data in users_data.items():
+        last_active_str = user_data.get("last_active", "")
+        if last_active_str:
+            try:
+                last_active_date = datetime.strptime(last_active_str, "%Y-%m-%d %H:%M:%S").date()
+                if last_active_date == today:
+                    today_activity.append({
+                        "username": user_data.get("username", "بدون"),
+                        "points": user_data.get("points", 0)
+                    })
+            except:
+                pass
+    
+    text = (
+        f"📊 إحصائيات مفصلة:\n\n"
         
-        # تحليل النقاط
-        total_points_sum = 0
-        for uid, user_data in users_data.items():
-            points = user_data.get("points", 0)
-            total_points_sum += points
-            
-            if points < 0:
-                user_stats["negative_points"] += 1
-            elif points == 0:
-                user_stats["zero_points"] += 1
-            else:
-                user_stats["positive_points"] += 1
+        f"👥 المستخدمين:\n"
+        f"• الإجمالي: {stats['total_users']}\n"
+        f"• النشطين اليوم: {len(today_activity)}\n"
+        f"• أعلى 5 نشطين اليوم:\n"
+    )
+    
+    # عرض أعلى 5 مستخدمين نشاطاً
+    today_activity_sorted = sorted(today_activity, key=lambda x: x['points'], reverse=True)[:5]
+    for i, user in enumerate(today_activity_sorted, 1):
+        text += f"   {i}. @{user['username']}: {user['points']} نقطة\n"
+    
+    text += (
+        f"\n🎟️ الأكواد:\n"
+        f"• النشطة: {active_codes}\n"
+        f"• المكتملة: {completed_codes}\n"
+        f"• نقاط الأكواد: {total_code_points}\n\n"
         
-        # === 2. إحصائيات القنوات التفصيلية ===
-        channel_stats = {
-            "total": len(channels),
-            "active": 0,
-            "completed": 0,
-            "by_owner": defaultdict(int),
-            "by_size": defaultdict(int),
-            "total_required": 0,
-            "total_current": 0,
-            "reused": 0,
-            "admin_added": 0,
-            "user_added": 0
-        }
+        f"📢 القنوات:\n"
+        f"• الإجمالي: {len(channels)}\n"
+        f"• النشطة: {active_channels}\n"
+        f"• المكتملة: {completed_channels}\n"
+        f"• نقاط القنوات: {total_channel_points}\n\n"
         
-        for channel_id, channel_data in channels.items():
-            # الحالة
-            if channel_data.get("completed"):
-                channel_stats["completed"] += 1
-            else:
-                channel_stats["active"] += 1
-            
-            # المالك
-            owner = channel_data.get("owner", "unknown")
-            channel_stats["by_owner"][owner] += 1
-            
-            # الحجم
-            required = channel_data.get("required", 0)
-            current = channel_data.get("current", 0)
-            channel_stats["total_required"] += required
-            channel_stats["total_current"] += current
-            
-            # فئات الأحجام
-            if required <= 10:
-                channel_stats["by_size"]["صغيرة (≤10)"] += 1
-            elif required <= 50:
-                channel_stats["by_size"]["متوسطة (11-50)"] += 1
-            elif required <= 100:
-                channel_stats["by_size"]["كبيرة (51-100)"] += 1
-            else:
-                channel_stats["by_size"]["ضخمة (>100)"] += 1
-            
-            # الإعادة استخدام
-            reuse_count = channel_data.get("reuse_count", 0)
-            if reuse_count > 0:
-                channel_stats["reused"] += 1
-            
-            # النوع
-            if channel_data.get("admin_added"):
-                channel_stats["admin_added"] += 1
-            else:
-                channel_stats["user_added"] += 1
-        
-        # === 3. إحصائيات الأكواد ===
-        code_stats = {
-            "total": len(codes),
-            "active": 0,
-            "completed": 0,
-            "total_points": 0,
-            "used_points": 0,
-            "remaining_points": 0,
-            "avg_points": 0
-        }
-        
-        for code_name, code_data in codes.items():
-            points = code_data.get("points", 0)
-            max_uses = code_data.get("max_uses", 0)
-            used_count = code_data.get("used_count", 0)
-            
-            code_stats["total_points"] += points * max_uses
-            code_stats["used_points"] += points * used_count
-            
-            if used_count >= max_uses:
-                code_stats["completed"] += 1
-            else:
-                code_stats["active"] += 1
-        
-        if code_stats["total"] > 0:
-            code_stats["remaining_points"] = code_stats["total_points"] - code_stats["used_points"]
-            code_stats["avg_points"] = code_stats["total_points"] / code_stats["total"]
-        
-        # === 4. إحصائيات النظام ===
-        system_stats = {
-            "database_size": os.path.getsize(DB_NAME) if os.path.exists(DB_NAME) else 0,
-            "backup_count": len(os.listdir("backups")) if os.path.exists("backups") else 0,
-            "log_size": os.path.getsize("bot_debug.log") if os.path.exists("bot_debug.log") else 0,
-            "uptime": int(time.time() - start_time) if 'start_time' in globals() else 0,
-            "active_locks": len(_active_locks),
-            "cached_users": len(_data_cache)
-        }
-        
-        # === 5. إحصائيات المكافآت والعقوبات ===
-        reward_stats = {
-            "daily_gifts": get_stat('total_daily_gifts') or 0,
-            "invite_points": stats['total_invites'] * 4,
-            "channel_points": channel_stats["total_current"] * 3,
-            "code_points": code_stats["used_points"],
-            "total_earned": 0,
-            "total_spent": 0,
-            "penalties": 0
-        }
-        
-        # حساب الإجمالي
-        reward_stats["total_earned"] = (
-            (reward_stats["daily_gifts"] * 3) +
-            reward_stats["invite_points"] +
-            reward_stats["channel_points"] +
-            reward_stats["code_points"]
-        )
-        
-        # حساب الصرف والعقوبات من المستخدمين
-        for uid, user_data in users_data.items():
-            reward_stats["total_spent"] += user_data.get("total_spent", 0)
-            # يمكن إضافة العقوبات هنا إذا كانت مخزنة
-        
-        # === 6. النسب المئوية ===
-        percentages = {
-            "users_with_username": (user_stats["with_username"] / max(user_stats["total"], 1)) * 100,
-            "channels_completed": (channel_stats["completed"] / max(channel_stats["total"], 1)) * 100,
-            "codes_used": (code_stats["used_points"] / max(code_stats["total_points"], 1)) * 100,
-            "channel_progress": (channel_stats["total_current"] / max(channel_stats["total_required"], 1)) * 100,
-            "users_active_today": (stats['active_users'] / max(user_stats["total"], 1)) * 100
-        }
-        
-        # === بناء التقرير ===
-        text = "📊 **إحصائيات البوت الشاملة**\n\n"
-        
-        # 1. قسم المستخدمين
-        text += "👥 **المستخدمين:**\n"
-        text += f"• الإجمالي: {user_stats['total']} مستخدم\n"
-        text += f"• باليوزر: {user_stats['with_username']} ({percentages['users_with_username']:.1f}%)\n"
-        text += f"• بدون يوزر: {user_stats['without_username']}\n"
-        text += f"• نقاط إيجابية: {user_stats['positive_points']}\n"
-        text += f"• نقاط سالبة: {user_stats['negative_points']}\n"
-        text += f"• نقاط صفر: {user_stats['zero_points']}\n"
-        text += f"• دعوات: {user_stats['with_invites']}\n"
-        text += f"• المحظورين: {user_stats['banned']}\n"
-        text += f"• المكتومين: {user_stats['muted']}\n\n"
-        
-        text += f"📈 **النمو:**\n"
-        text += f"• جدد اليوم: {user_stats['new_today']}\n"
-        text += f"• جدد الأسبوع: {user_stats['new_week']}\n"
-        text += f"• جدد الشهر: {user_stats['new_month']}\n"
-        text += f"• نشطين اليوم: {stats['active_users']} ({percentages['users_active_today']:.1f}%)\n\n"
-        
-        # 2. قسم القنوات
-        text += "📢 **القنوات:**\n"
-        text += f"• الإجمالي: {channel_stats['total']} قناة\n"
-        text += f"• النشطة: {channel_stats['active']}\n"
-        text += f"• المكتملة: {channel_stats['completed']} ({percentages['channels_completed']:.1f}%)\n"
-        text += f"• المستخدمة مجدداً: {channel_stats['reused']}\n"
-        text += f"• المضافة من الأدمن: {channel_stats['admin_added']}\n"
-        text += f"• المضافة من المستخدمين: {channel_stats['user_added']}\n\n"
-        
-        text += f"📊 **أحجام القنوات:**\n"
-        for size, count in channel_stats['by_size'].items():
-            text += f"• {size}: {count}\n"
-        
-        text += f"\n🎯 **تقدم القنوات:**\n"
-        text += f"• الإجمالي المطلوب: {channel_stats['total_required']} عضو\n"
-        text += f"• الإجمالي الحالي: {channel_stats['total_current']} عضو\n"
-        text += f"• نسبة التقدم: {percentages['channel_progress']:.1f}%\n"
-        text += f"• المتبقي: {channel_stats['total_required'] - channel_stats['total_current']} عضو\n\n"
-        
-        # 3. قسم الأكواد
-        text += "🎟️ **الأكواد:**\n"
-        text += f"• الإجمالي: {code_stats['total']} كود\n"
-        text += f"• النشطة: {code_stats['active']}\n"
-        text += f"• المكتملة: {code_stats['completed']}\n"
-        text += f"• متوسط النقاط: {code_stats['avg_points']:.1f}\n"
-        text += f"• إجمالي النقاط: {code_stats['total_points']}\n"
-        text += f"• المستخدمة: {code_stats['used_points']} ({percentages['codes_used']:.1f}%)\n"
-        text += f"• المتبقية: {code_stats['remaining_points']}\n\n"
-        
-        # 4. قسم المالية
-        text += "💰 **المالية:**\n"
-        text += f"• إجمالي النقاط في النظام: {stats['total_points']}\n"
-        text += f"• إجمالي الدعوات: {stats['total_invites']}\n"
-        text += f"• أرباح الدعوات: {reward_stats['invite_points']}\n"
-        text += f"• أرباح القنوات: {reward_stats['channel_points']}\n"
-        text += f"• أرباح الأكواد: {reward_stats['code_points']}\n"
-        text += f"• أرباح الهدايا: {reward_stats['daily_gifts'] * 3}\n"
-        text += f"• **الإجمالي المكتسب:** {reward_stats['total_earned']} نقطة\n"
-        text += f"• **الإجمالي المصروف:** {reward_stats['total_spent']} نقطة\n"
-        text += f"• **الرصيد الصافي:** {reward_stats['total_earned'] - reward_stats['total_spent']} نقطة\n\n"
-        
-        # 5. قسم النظام
-        text += "⚙️ **النظام:**\n"
-        text += f"• حجم قاعدة البيانات: {system_stats['database_size'] / (1024*1024):.2f} ميجابايت\n"
-        text += f"• نسخ احتياطية: {system_stats['backup_count']}\n"
-        text += f"• حجم السجلات: {system_stats['log_size'] / 1024:.2f} كيلوبايت\n"
-        
-        if system_stats['uptime'] > 0:
-            hours = system_stats['uptime'] // 3600
-            minutes = (system_stats['uptime'] % 3600) // 60
-            seconds = system_stats['uptime'] % 60
-            text += f"• وقت التشغيل: {hours}:{minutes:02d}:{seconds:02d}\n"
-        
-        text += f"• الأقفال النشطة: {system_stats['active_locks']}\n"
-        text += f"• المستخدمين في الذاكرة: {system_stats['cached_users']}\n\n"
-        
-        # 6. معلومات السيرفر
-        text += "🖥️ **السيرفر:**\n"
-        try:
-            import psutil
-            cpu_percent = psutil.cpu_percent()
-            memory = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
-            
-            text += f"• استخدام CPU: {cpu_percent:.1f}%\n"
-            text += f"• استخدام الرام: {memory.percent:.1f}%\n"
-            text += f"• استخدام القرص: {disk.percent:.1f}%\n"
-        except:
-            text += "• معلومات السيرفر غير متوفرة\n"
-        
-        text += f"• الوقت الحالي: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        
-        # الأزرار
-        keyboard = [
-            [InlineKeyboardButton("🔄 تحديث", callback_data="admin_stats_detailed"),
-             InlineKeyboardButton("📊 إحصائيات مختصرة", callback_data="admin_stats")],
-            [InlineKeyboardButton("📈 رسم بياني", callback_data="admin_stats_graph")],
-            [InlineKeyboardButton("📋 تقرير المراقبة", callback_data="admin_monitor_report")],
-            [InlineKeyboardButton("🔙 رجوع للوحة", callback_data="admin_panel")]
-        ]
-        
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        
-    except Exception as e:
-        logger.error(f"❌ خطأ في show_detailed_stats: {e}")
-        import traceback
-        traceback.print_exc()
-        await query.answer("⚠️ حدث خطأ في جلب الإحصائيات", show_alert=True)
+        f"💰 إحصائيات مالية:\n"
+        f"• إجمالي النقاط: {stats['total_points']}\n"
+        f"• مجموع الدعوات: {stats['total_invites']}\n"
+        f"• نقاط الهدايا: {get_stat('total_daily_gifts', 0) * 3}\n"
+        f"• نقاط المشتريات: {get_stat('total_purchases', 0) * 2}\n"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔄 تحديث", callback_data="admin_stats_detailed"),
+         InlineKeyboardButton("📈 رسم بياني", callback_data="admin_stats_graph")],
+        [InlineKeyboardButton("🔙 رجوع للوحة", callback_data="admin_panel")]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة الأخطاء"""
