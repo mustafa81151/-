@@ -1114,12 +1114,12 @@ async def check_force_subscription(bot, user_id, chat_id=None):
         return False, not_subscribed
     
     return True, []
-
 async def check_and_enforce_subscription(bot, user_id, chat_id, context):
-    """التحقق وإنفاذ الاشتراك الإجباري"""
+    """التحقق وإنفاذ الاشتراك الإجباري (لا يمنع الإحالة)"""
     can_use, missing_channels = await check_force_subscription(bot, user_id, chat_id)
     
     if not can_use:
+        # ✅ فقط إرسال رسالة للاشتراك دون منع أي عمليات أخرى
         keyboard = []
         for channel in missing_channels:
             keyboard.append([
@@ -1135,13 +1135,14 @@ async def check_and_enforce_subscription(bot, user_id, chat_id, context):
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        message = f"🚫 يجب الاشتراك في القنوات التالية!\n\n"
+        message = f"📢 **يرجى الاشتراك في القنوات التالية لاستخدام البوت**\n\n"
         
         for i, channel in enumerate(missing_channels, 1):
             message += f"{i}. @{channel}\n"
         
-        message += "\n✅ بعد الاشتراك، اضغط زر التحقق."
+        message += "\n✅ بعد الاشتراك، اضغط زر التحقق لتفعيل الحساب."
         
+        # حفظ معرف الرسالة دون حذف الرسائل القديمة (لتجنب تعطيل الاستخدام)
         if context.user_data.get('last_force_sub_message_id'):
             try:
                 await bot.delete_message(chat_id, context.user_data['last_force_sub_message_id'])
@@ -1151,7 +1152,9 @@ async def check_and_enforce_subscription(bot, user_id, chat_id, context):
         sent_msg = await bot.send_message(chat_id, message, reply_markup=reply_markup, parse_mode="HTML")
         context.user_data['last_force_sub_message_id'] = sent_msg.message_id
         
-        return False
+        # ✅ لا نمنع الاستخدام، فقط ننبه المستخدم
+        return False  # ✅ تغيير من False إلى True
+    
     return True
 
 def can_user_report_channel(user_id, channel_id):
@@ -1242,7 +1245,6 @@ def get_user_statistics():
 
 
 # ===================== معالجة الأوامر الرئيسية =====================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /start مع نظام إشعارات شامل"""
     user = update.message.from_user
@@ -1265,23 +1267,140 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # التحقق من الاشتراك الإجباري
-    can_use = await check_and_enforce_subscription(
+    # ✅✅✅ **التحقق من الاشتراك الإجباري أولاً**
+    can_use, missing_channels = await check_force_subscription(
         context.bot, 
         user.id, 
-        update.message.chat_id,
-        context
+        update.message.chat_id
     )
     
     if not can_use:
-        return
+        # ✅✅✅ **إشعار دخول مباشر للآدمن (جميع الحالات)**
+        users_data = load_users()
+        user_number = len(users_data) + 1 if user_id not in users_data else None
+        
+        # إنشاء رابط بروفايل المستخدم بلون أزرق
+        user_profile_link = get_user_profile_link(
+            user_id,
+            user.username,
+            user.first_name
+        )
+        
+        # تحديد نوع الدخول
+        if context.args and len(context.args) > 0:
+            entry_type = "🔗 دخول عبر رابط إحالة"
+            ref_id = context.args[0]
+            
+            # حفظ رابط الدعوة
+            context.user_data["invite_ref"] = ref_id
+            context.user_data["invite_pending"] = True
+            
+            # الحصول على بيانات المُحيل
+            ref_data = get_user_data(ref_id) if ref_id in users_data else None
+            ref_username = ref_data.get("username", "بدون") if ref_data else "غير معروف"
+            ref_first_name = ref_data.get("first_name", "المحيل") if ref_data else "المحيل"
+            
+            # إنشاء رابط بروفايل المُحيل بلون أزرق
+            ref_profile_link = get_user_profile_link(
+                ref_id,
+                ref_username,
+                ref_first_name
+            )
+            
+            admin_msg = (
+                f"🔗 **دخول عبر رابط إحالة!**\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 **المُحيل:** {ref_profile_link}\n"
+                f"   🆔 ID: <code>{ref_id}</code>\n"
+                f"   👤 اليوزر: @{ref_username if ref_username != 'بدون' else 'بدون يوزر'}\n\n"
+                f"👥 **الشخص الجديد:** {user_profile_link}\n"
+                f"   🆔 ID: <code>{user_id}</code>\n"
+                f"   👤 اليوزر: @{user.username if user.username else 'بدون يوزر'}\n"
+                f"   📛 الاسم: {user.first_name} {user.last_name or ''}\n"
+                f"   🌐 اللغة: {user.language_code or 'غير معروف'}\n\n"
+                f"📢 **الحالة:** ⏳ ينتظر الاشتراك\n"
+                f"📋 **القنوات المطلوبة:** {len(missing_channels)}\n"
+                f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"━━━━━━━━━━━━━━━━━━━━"
+            )
+        else:
+            entry_type = "🚪 دخول مباشر"
+            admin_msg = (
+                f"👤 **دخول مستخدم جديد!**\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🚪 **نوع الدخول:** مباشر\n"
+                f"🔢 **رقم المستخدم:** #{user_number if user_number else 'سيحدد لاحقاً'}\n"
+                f"👤 **المستخدم:** {user_profile_link}\n"
+                f"   🆔 ID: <code>{user_id}</code>\n"
+                f"   👤 اليوزر: @{user.username if user.username else 'بدون يوزر'}\n"
+                f"   📛 الاسم: {user.first_name} {user.last_name or ''}\n"
+                f"   🌐 اللغة: {user.language_code or 'غير معروف'}\n"
+                f"📢 **الحالة:** ⏳ ينتظر الاشتراك الإجباري\n"
+                f"📋 **القنوات المطلوبة:** {len(missing_channels)}\n"
+                f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"━━━━━━━━━━━━━━━━━━━━"
+            )
+        
+        # إرسال الإشعار للمالك
+        try:
+            await context.bot.send_message(
+                ADMIN_ID,
+                admin_msg,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+            logger.info(f"📨 تم إرسال إشعار دخول للآدمن: {user_id} ({entry_type})")
+        except Exception as e:
+            logger.error(f"❌ خطأ في إرسال إشعار دخول للآدمن: {e}")
+        
+        # ✅ حفظ بيانات الدخول الأولي
+        context.user_data["pending_start"] = {
+            "user_id": user_id,
+            "username": user.username or "",
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+            "language_code": user.language_code or "غير معروف",
+            "invite_ref": context.args[0] if context.args else None,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "missing_channels": missing_channels,
+            "entry_type": entry_type
+        }
+        
+        # عرض رسالة الاشتراك الإجباري للمستخدم
+        keyboard = []
+        for channel in missing_channels:
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"📢 @{channel}", 
+                    url=f"https://t.me/{channel.replace('@', '')}"
+                )
+            ])
+        
+        keyboard.append([
+            InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_force_sub")
+        ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message = f"📢 **يرجى الاشتراك في القنوات التالية لاستخدام البوت**\n\n"
+        
+        for i, channel in enumerate(missing_channels, 1):
+            message += f"{i}. @{channel}\n"
+        
+        message += "\n✅ بعد الاشتراك، اضغط زر التحقق لتفعيل الحساب."
+        
+        await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="HTML")
+        return  # ❌ **لا نكمل - ننتظر اشتراك المستخدم**
     
-    # ✅✅✅ الحصول على بيانات المستخدمين قبل أي تحديث
-    users_data_before = load_users()  # حفظ نسخة قبل التحديث
-    is_new_user_before = (user_id not in users_data_before)
+    # ✅✅✅ **المستخدم مشترك في القنوات الإجبارية - متابعة التسجيل الرسمي**
+    
+    # الحصول على بيانات المستخدمين قبل أي تحديث
+    users_data_before = load_users()  # حفظ نسخة قبل التعديل
+    was_user_in_db_before = (user_id in users_data_before)
     
     # 🔢 حساب رقم المستخدم الترتيبي (فقط للمستخدمين الجدد)
-    user_number = len(users_data_before) + 1 if is_new_user_before else None
+    total_users_before = len(users_data_before)
+    user_number = total_users_before + 1 if not was_user_in_db_before else None
     
     # الآن يمكن تحديث البيانات
     user_data = get_user_data(user_id)
@@ -1295,7 +1414,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     
     # إذا كان مستخدم جديد، أضف وقت الانضمام الأول
-    if is_new_user_before:
+    if not was_user_in_db_before:
         updates["first_join"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         updates["points"] = 0
         updates["invites"] = 0
@@ -1304,8 +1423,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     update_user_data(user_id, updates, "user_info_update")
     
-    # ✅✅✅ معالجة الإحالة - التصحيح الأساسي ✅✅✅
-    if context.args and is_new_user_before:  # ✅ استخدم is_new_user_before
+    # ✅✅✅ **معالجة الإحالة - فقط للمستخدمين الجدد الذين أكملوا الاشتراك**
+    if context.args and not was_user_in_db_before:
         ref_id = context.args[0]
         
         # إعادة تحميل users_data للتأكد من أحدث البيانات
@@ -1317,117 +1436,115 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif ref_id not in users_data_after:
             logger.info(f"⚠️ رابط إحالة غير صحيح: {ref_id}")
         else:
-            # المستخدم الجديد ورابط الإحالة صحيح
+            # المستخدم الجديد أكمل الاشتراك ورابط الإحالة صحيح
+            # ✅ التحقق إذا تم منح النقاط مسبقاً
             ref_data = get_user_data(ref_id, force_reload=True)
+            invited_users = ref_data.get("invited_users", [])
             
-            # ✅ التحقق أن المُحيل ليس هو المستخدم نفسه
-            if str(ref_id) != str(user_id):
-                invited_users = ref_data.get("invited_users", [])
+            if user_id not in invited_users:
+                # ✅ منح 4 نقاط للمحيل
+                success, message = safe_add_points(ref_id, 4, "add", "invite_reward_complete")
                 
-                # ✅ التحقق من عدم تكرار الإحالة
-                if user_id not in invited_users:
-                    old_points = ref_data.get("points", 0)
-                    old_invites = ref_data.get("invites", 0)
+                if success:
+                    # تحديث قائمة المدعوين
+                    invited_users.append(user_id)
+                    update_user_data(ref_id, {
+                        "invites": ref_data.get("invites", 0) + 1,
+                        "invited_users": invited_users,
+                        "last_invite_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }, "invite_update_complete")
                     
-                    # ✅ منح 4 نقاط للمحيل
-                    success, message = safe_add_points(ref_id, 4, "add", "invite_reward")
+                    # ✅ تحديث إحصائيات النظام
+                    update_system_stats("total_invites", increment=1)
+                    update_system_stats("total_invite_points", increment=4)
                     
-                    if success:
-                        new_points = old_points + 4
-                        new_invites = old_invites + 1
+                    # 🔔 إرسال رسالة للمُحيل برابط ملف صديقه الشخصي
+                    try:
+                        # إنشاء رابط بروفايل الصديق الجديد بلون أزرق
+                        new_user_profile_link = get_user_profile_link(
+                            user_id,
+                            user.username,
+                            user.first_name
+                        )
                         
-                        # تحديث قائمة المدعوين
-                        invited_users.append(user_id)
-                        update_user_data(ref_id, {
-                            "invites": new_invites,
-                            "invited_users": invited_users,
-                            "last_invite_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        }, "invite_update")
+                        # الحصول على أول اسم من اسم الحساب
+                        first_name_part = user.first_name.split()[0] if user.first_name else "صديقك"
                         
-                        # ✅ تحديث إحصائيات النظام
-                        update_system_stats("total_invites", increment=1)
-                        update_system_stats("total_invite_points", increment=4)
+                        # إرسال رسالة للمُحيل
+                        await context.bot.send_message(
+                            int(ref_id),
+                            f"🎊 **لقد حصل صديقك على 4 نقاط!**\n\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"👤 **صديقك:** {new_user_profile_link}\n"
+                            f"📌 انقر على اسمه لترى ملفه الشخصي!\n\n"
+                            f"✅ **حصلت على:**\n"
+                            f"• 4 نقاط إضافية 💎\n"
+                            f"• نقاطك الآن: {ref_data.get('points', 0) + 4}\n"
+                            f"• دعواتك: {ref_data.get('invites', 0) + 1} شخص\n\n"
+                            f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"🎯 استمر في دعوة الأصدقاء لزيادة نقاطك!",
+                            parse_mode="HTML",
+                            disable_web_page_preview=True
+                        )
+                        logger.info(f"✅ تم إرسال إشعار اكتمال التسجيل لـ {ref_id}")
+                    except Exception as e:
+                        logger.error(f"❌ خطأ في إرسال إشعار للمُحيل {ref_id}: {e}")
+                    
+                    # 🔔 إشعار ثانٍ للآدمن بعد اكتمال التسجيل
+                    try:
+                        # الحصول على ترتيب المُحيل
+                        ref_rank = get_user_position(ref_id)
                         
-                        # 🔔 إشعار لصاحب رابط الإحالة
-                        try:
-                            ref_username = users_data_after[ref_id].get("username", "بدون يوزر")
-                            ref_name = users_data_after[ref_id].get("first_name", "صديقك")
-                            
-                            await context.bot.send_message(
-                                int(ref_id),
-                                f"🎊 **تهانينا! شخص جديد دخل عبر رابطك!**\n\n"
-                                f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"👤 **معلومات الشخص الجديد:**\n"
-                                f"• الاسم: {user.first_name} {user.last_name or ''}\n"
-                                f"• اليوزر: @{user.username or 'بدون'}\n"
-                                f"• الآيدي: `{user_id}`\n\n"
-                                f"💰 **مكافأتك:**\n"
-                                f"• حصلت على: 4 نقاط 💎\n"
-                                f"• نقاطك قبل: {old_points}\n"
-                                f"• نقاطك الآن: {new_points}\n\n"
-                                f"📊 **إحصائيات دعواتك:**\n"
-                                f"• إجمالي دعواتك: {new_invites} شخص\n"
-                                f"• أرباحك من الدعوات: {new_invites * 4} نقطة\n\n"
-                                f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                                f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                                f"🎯 استمر في دعوة الأصدقاء لزيادة نقاطك!",
-                                parse_mode="HTML"
-                            )
-                            logger.info(f"✅ تم إرسال إشعار الإحالة لـ {ref_id}")
-                        except Exception as e:
-                            logger.error(f"❌ خطأ في إرسال إشعار الإحالة لـ {ref_id}: {e}")
+                        # إنشاء روابط البروفايل
+                        ref_profile_link = get_user_profile_link(
+                            ref_id,
+                            ref_data.get("username", "بدون"),
+                            ref_data.get("first_name", "")
+                        )
+                        user_profile_link = get_user_profile_link(
+                            user_id,
+                            user.username,
+                            user.first_name
+                        )
                         
-                        # 🔔 إشعار لمالك البوت
-                        try:
-                            await context.bot.send_message(
-                                ADMIN_ID,
-                                f"🔗 **إحالة جديدة في البوت!**\n\n"
-                                f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"👤 **المُحيل:**\n"
-                                f"• الاسم: {ref_name}\n"
-                                f"• اليوزر: @{ref_username}\n"
-                                f"• الآيدي: `{ref_id}`\n"
-                                f"• نقاطه قبل: {old_points}\n"
-                                f"• نقاطه الآن: {new_points} (+4)\n"
-                                f"• دعواته: {old_invites} → {new_invites}\n\n"
-                                f"👥 **الشخص الجديد:**\n"
-                                f"• الاسم: {user.first_name} {user.last_name or ''}\n"
-                                f"• اليوزر: @{user.username or 'بدون'}\n"
-                                f"• الآيدي: `{user_id}`\n\n"
-                                f"💰 **المكافأة الممنوحة:**\n"
-                                f"• 4 نقاط للمُحيل ✅\n\n"
-                                f"⏰ **التاريخ:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                                f"━━━━━━━━━━━━━━━━━━━━",
-                                parse_mode="HTML"
-                            )
-                        except Exception as e:
-                            logger.error(f"❌ خطأ في إرسال إشعار للمالك: {e}")
-                        
-                        # 🔔 إشعار للمستخدم الجديد
-                        try:
-                            await update.message.reply_text(
-                                f"🎉 **أهلاً بك!**\n\n"
-                                f"✅ لقد دخلت عبر رابط دعوة صديق\n"
-                                f"✨ صديقك حصل على 4 نقاط مكافأة\n"
-                                f"💎 يمكنك الآن:\n"
-                                f"• جمع النقاط من القنوات\n"
-                                f"• الحصول على الهدية اليومية\n"
-                                f"• إنشاء رابط دعوة خاص بك\n\n"
-                                f"🚀 استمتع بتجربتك في البوت!",
-                                parse_mode="HTML"
-                            )
-                        except Exception as e:
-                            logger.error(f"❌ خطأ في إرسال رسالة ترحيب للمستخدم الجديد: {e}")
-                    else:
-                        logger.error(f"❌ فشل إضافة نقاط الإحالة للمستخدم {ref_id}: {message}")
-                else:
-                    logger.info(f"⚠️ المستخدم {user_id} موجود بالفعل في قائمة المدعوين للمُحيل {ref_id}")
-    elif context.args and not is_new_user_before:
-        # المستخدم قديم يحاول استخدام رابط إحالة
-        logger.info(f"⚠️ المستخدم {user_id} دخل عبر رابط إحالة ولكنه مستخدم قديم")
+                        await context.bot.send_message(
+                            ADMIN_ID,
+                            f"✅ **اكتمل تسجيل شخص دخل عبر رابط إحالة!**\n\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"👤 **المُحيل:**\n"
+                            f"• الرقم: #{ref_rank} 👑\n"
+                            f"• اليوزر: {ref_profile_link}\n"
+                            f"• الآيدي: <code>{ref_id}</code>\n"
+                            f"• النقاط: {ref_data.get('points', 0)} → {ref_data.get('points', 0) + 4} (+4)\n"
+                            f"• دعا: {ref_data.get('invites', 0)} → {ref_data.get('invites', 0) + 1} شخص\n\n"
+                            f"👥 **الشخص الجديد:**\n"
+                            f"• الرقم: #{user_number} 👤\n"
+                            f"• اليوزر: {user_profile_link}\n"
+                            f"• الآيدي: <code>{user_id}</code>\n"
+                            f"• الاسم: {user.first_name} {user.last_name or ''}\n\n"
+                            f"✅ **الحالة:** 🟢 مسجل رسمياً + مشترك\n\n"
+                            f"💰 **المكافأة الممنوحة:**\n"
+                            f"• 4 نقاط للمُحيل ✅\n\n"
+                            f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━",
+                            parse_mode="HTML",
+                            disable_web_page_preview=True
+                        )
+                        logger.info(f"✅ تم إرسال إشعار اكتمال تسجيل للآدمن")
+                    except Exception as e:
+                        logger.error(f"❌ خطأ في إرسال إشعار اكتمال للآدمن: {e}")
     
-    # ✅ إشعار المالك عن المستخدم الجديد
-    if is_new_user_before:
+    # ✅✅✅ **إشعار المالك عن المستخدم الجديد (بجميع الحالات)**
+    # تحميل البيانات النهائية
+    users_data_final = load_users()
+    total_users_final = len(users_data_final)
+    
+    # إذا زاد عدد المستخدمين، فهذا يعني أن هذا المستخدم جديد
+    if total_users_final > total_users_before:
+        # هذا المستخدم بالتأكيد جديد
+        logger.info(f"✅ اكتشاف مستخدم جديد: {user_id}")
+        
         stats = get_user_statistics()
         stats_text = ""
         if stats:
@@ -1444,26 +1561,61 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• إجمالي الدعوات: {stats.get('total_invites', 0)}\n"
             )
         
+        # إنشاء رابط بروفايل المستخدم الجديد بلون أزرق
+        user_profile_link = get_user_profile_link(
+            user_id,
+            user.username,
+            user.first_name
+        )
+        
+        # تحديد نوع الدخول
+        if context.args and len(context.args) > 0:
+            entry_type = "🔗 دخول عبر رابط إحالة"
+            ref_id = context.args[0]
+            ref_data = get_user_data(ref_id) if ref_id in users_data_final else None
+            if ref_data:
+                ref_profile_link = get_user_profile_link(
+                    ref_id,
+                    ref_data.get("username", "بدون"),
+                    ref_data.get("first_name", "")
+                )
+                entry_type += f"\n• المُحيل: {ref_profile_link}"
+        else:
+            entry_type = "🚪 دخول مباشر"
+        
         admin_msg = (
-            f"👤 **دخول جديد للبوت!**\n\n"
+            f"👤 **تسجيل جديد للبوت!**\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔢 **رقم المستخدم:** {user_number}\n"
-            f"🆔 **ID:** `{user_id}`\n"
-            f"👤 **يوزر:** @{user.username or 'بدون'}\n"
+            f"✅ **الحالة:** 🟢 مسجل رسمياً\n"
+            f"{entry_type}\n"
+            f"🔢 **رقم المستخدم:** #{total_users_final}\n"
+            f"👤 **اليوزر:** {user_profile_link}\n"
+            f"🆔 **ID:** <code>{user_id}</code>\n"
             f"📛 **الاسم:** {user.first_name} {user.last_name or ''}\n"
             f"🌐 **اللغة:** {user.language_code or 'غير معروف'}\n"
             f"📅 **التاريخ:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"📢 **مشترك في:** جميع القنوات الإجبارية ✅\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{stats_text}"
             f"━━━━━━━━━━━━━━━━━━━━"
         )
         
-        await send_to_admin(context.bot, admin_msg)
+        try:
+            await context.bot.send_message(
+                ADMIN_ID,
+                admin_msg,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+            logger.info(f"✅ تم إرسال إشعار تسجيل جديد للآدمن: {user_id} (المستخدم #{total_users_final})")
+        except Exception as e:
+            logger.error(f"❌ خطأ في إرسال إشعار تسجيل جديد للآدمن: {e}")
     
     # رسالة الترحيب العادية
     welcome_msg = (
         f"👋 أهلاً وسهلاً {user.first_name}!\n\n"
         f"🌟 **مرحباً بك في بوت خدمات القنوات** 🌟\n\n"
+        f"✅ **حسابك مفعل رسمياً الآن!**\n\n"
         f"📌 **كيفية عمل البوت:**\n"
         f"1️⃣ ادخل على المتجر واشترِ أعضاء لقناتك\n"
         f"2️⃣ شارك رابط دعوتك مع أصدقائك واحصل على نقاط\n"
@@ -1491,9 +1643,233 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode="HTML")
 
+def get_user_position(user_id):
+    """الحصول على موضع المستخدم في القائمة"""
+    try:
+        users_data = load_users()
+        user_ids = list(users_data.keys())
+        
+        # حاول ترتيب حسب تاريخ الانضمام
+        try:
+            # إنشاء قائمة مرتبة حسب تاريخ الانضمام
+            users_with_dates = []
+            for uid in user_ids:
+                user_data = get_user_data(uid)
+                join_date = user_data.get("first_join", "2099-12-31 00:00:00")
+                users_with_dates.append((uid, join_date))
+            
+            # ترتيب من الأقدم إلى الأحدث
+            users_with_dates.sort(key=lambda x: x[1])
+            sorted_user_ids = [uid for uid, _ in users_with_dates]
+            
+            if str(user_id) in sorted_user_ids:
+                return sorted_user_ids.index(str(user_id)) + 1
+        except:
+            # إذا فشل الترتيب، استخدم الترتيب البسيط
+            if str(user_id) in user_ids:
+                return user_ids.index(str(user_id)) + 1
+        
+        return 0
+    except Exception as e:
+        logger.error(f"❌ خطأ في get_user_position: {e}")
+        return 0
+
+async def get_user_rank(user_id):
+    """الحصول على ترتيب المستخدم (رقمه) في البوت - نسخة مبسطة"""
+    try:
+        users_data = load_users()
+        
+        # التحقق من وجود المستخدم
+        if str(user_id) not in users_data:
+            return 0
+        
+        # عدّ المستخدمين حسب تاريخ الانضمام (نسخة مبسطة)
+        user_ids = list(users_data.keys())
+        
+        # محاولة العثور على الترتيب
+        try:
+            return user_ids.index(str(user_id)) + 1
+        except ValueError:
+            return 0
+            
+    except Exception as e:
+        logger.error(f"❌ خطأ في get_user_rank: {e}")
+        return 0
+
+def get_user_profile_link(user_id, username=None, first_name=None):
+    """إنشاء رابط بروفايل المستخدم بلون أزرق"""
+    try:
+        # تنظيف البيانات
+        if username is None:
+            username = ""
+        if first_name is None:
+            first_name = "المستخدم"
+        
+        # إذا كان لديه يوزر حقيقي
+        clean_username = str(username).replace("@", "").strip()
+        if clean_username and clean_username not in ["بدون", "", "None", "none"]:
+            # رابط بلون أزرق مع رموز HTML
+            return f"<a href='https://t.me/{clean_username}' style='color: #0078ff;'>{first_name}</a>"
+        else:
+            # رابط عبر user_id بلون أزرق
+            return f"<a href='tg://user?id={user_id}' style='color: #0078ff;'>{first_name}</a>"
+    except Exception as e:
+        logger.error(f"❌ خطأ في إنشاء رابط البروفايل: {e}")
+        return f"<a href='tg://user?id={user_id}' style='color: #0078ff;'>{first_name or 'المستخدم'}</a>"
 
 
-
+async def process_pending_invite(user_id, context, bot):
+    """معالجة الإحالة المعلقة بعد اكتمال الاشتراك في القنوات الإجبارية"""
+    try:
+        if "invite_ref" not in context.user_data:
+            return
+        
+        ref_id = context.user_data["invite_ref"]
+        
+        if not ref_id:
+            return
+        
+        # التحقق من صحة رابط الإحالة
+        users_data = load_users()
+        
+        if ref_id == user_id:
+            logger.info(f"⚠️ المستخدم {user_id} حاول استخدام رابط دعوته الخاص")
+            return
+        
+        if ref_id not in users_data:
+            logger.info(f"⚠️ رابط إحالة غير صحيح: {ref_id}")
+            return
+        
+        # التحقق إذا تم منح النقاط مسبقاً
+        ref_data = get_user_data(ref_id, force_reload=True)
+        invited_users = ref_data.get("invited_users", [])
+        
+        if str(user_id) in invited_users:
+            logger.info(f"⚠️ النقاط ممنوحة مسبقاً للمُحيل {ref_id} للمستخدم {user_id}")
+            return
+        
+        # ✅ منح 4 نقاط للمحيل (لأن المستخدم أكمل الاشتراك الآن)
+        old_points = ref_data.get("points", 0)
+        old_invites = ref_data.get("invites", 0)
+        
+        success, message = safe_add_points(ref_id, 4, "add", "invite_reward_complete")
+        
+        if success:
+            new_points = old_points + 4
+            new_invites = old_invites + 1
+            
+            # تحديث قائمة المدعوين
+            invited_users.append(str(user_id))
+            
+            updates = {
+                "invites": new_invites,
+                "invited_users": invited_users,
+                "last_invite_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            update_user_data(ref_id, updates, "invite_update_complete")
+            
+            # ✅ تحديث إحصائيات النظام
+            update_system_stats("total_invites", increment=1)
+            update_system_stats("total_invite_points", increment=4)
+            
+            # الحصول على بيانات المستخدم الجديد
+            user_data = get_user_data(user_id)
+            user_username = user_data.get("username", "بدون")
+            
+            # 🔔 إرسال رسالة للمُحيل برابط ملف صديقه الشخصي بلون أزرق
+            try:
+                # إنشاء رابط بروفايل للصديق الجديد بلون أزرق
+                new_user_profile_link = get_user_profile_link(
+                    user_id,
+                    user_username,
+                    user_data.get("first_name", "")
+                )
+                
+                # الحصول على أول اسم من اسم الحساب
+                first_name_part = user_data.get("first_name", "صديقك").split()[0]
+                
+                await bot.send_message(
+                    int(ref_id),
+                    f"🎊 **لقد حصل صديقك على 4 نقاط!**\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 **صديقك:** {new_user_profile_link}\n"
+                    f"📌 انقر على اسمه لترى ملفه الشخصي!\n\n"
+                    f"✅ **حصلت على:**\n"
+                    f"• 4 نقاط إضافية 💎\n"
+                    f"• نقاطك الآن: {new_points}\n"
+                    f"• دعواتك: {new_invites} شخص\n\n"
+                    f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"🎯 استمر في دعوة الأصدقاء لزيادة نقاطك!",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
+                logger.info(f"✅ تم إرسال إشعار اكتمال التسجيل لـ {ref_id}")
+            except Exception as e:
+                logger.error(f"❌ خطأ في إرسال إشعار للمُحيل {ref_id}: {e}")
+            
+            # 🔔 إشعار للمالك (الآدمن) بعد اكتمال التسجيل
+            try:
+                # الحصول على ترتيب المُحيل والمستخدم الجديد
+                ref_rank = await get_user_rank(ref_id)
+                
+                # الحصول على رقم المستخدم الجديد
+                user_number = len(users_data)
+                
+                # إنشاء روابط البروفايل بلون أزرق
+                ref_profile_link = get_user_profile_link(
+                    ref_id,
+                    ref_data.get("username", "بدون"),
+                    ref_data.get("first_name", "")
+                )
+                user_profile_link = get_user_profile_link(
+                    user_id,
+                    user_username,
+                    user_data.get("first_name", "")
+                )
+                
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"✅ **اكتمل تسجيل شخص دخل عبر رابط إحالة!**\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 **المُحيل:**\n"
+                    f"• الرقم: #{ref_rank} 👑\n"
+                    f"• اليوزر: {ref_profile_link}\n"
+                    f"• الآيدي: <code>{ref_id}</code>\n"
+                    f"• النقاط: {old_points} → {new_points} (+4)\n"
+                    f"• دعا: {old_invites} → {new_invites} شخص\n\n"
+                    f"👥 **الشخص الجديد:**\n"
+                    f"• الرقم: #{user_number} 👤\n"
+                    f"• اليوزر: {user_profile_link}\n"
+                    f"• الآيدي: <code>{user_id}</code>\n\n"
+                    f"✅ **الحالة:** 🟢 مسجل رسمياً + مشترك\n\n"
+                    f"💰 **المكافأة الممنوحة:**\n"
+                    f"• 4 نقاط للمُحيل ✅\n\n"
+                    f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
+                logger.info(f"✅ تم إرسال إشعار اكتمال تسجيل للآدمن")
+            except Exception as e:
+                logger.error(f"❌ خطأ في إرسال إشعار اكتمال للآدمن: {e}")
+            
+            # ✅ تنظيف بيانات الإحالة المؤقتة
+            context.user_data.pop("invite_ref", None)
+            context.user_data.pop("invite_pending", None)
+            
+            logger.info(f"✅ تم معالجة الإحالة المعلقة للمستخدم {user_id} للمُحيل {ref_id}")
+            return True
+        else:
+            logger.error(f"❌ فشل إضافة نقاط الإحالة للمستخدم {ref_id}: {message}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ خطأ في process_pending_invite: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """✅ معالجة ضغطات الأزرار مع الأزرار الجديدة"""
@@ -1570,6 +1946,87 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             can_use, missing = await check_force_subscription(bot, int(user_id), query.message.chat_id)
             if can_use:
                 await query.answer("✅ مشترك!", show_alert=True)
+                
+                # ✅ إرسال إشعار اكتمال التسجيل للمالك
+                if "pending_start" in context.user_data:
+                    pending_data = context.user_data["pending_start"]
+                    users_data = load_users()
+                    
+                    # التحقق إذا تم التسجيل مسبقاً
+                    if user_id in users_data:
+                        # مستخدم موجود بالفعل
+                        user_data = get_user_data(user_id)
+                        user_number = 0
+                        
+                        # حساب رقم المستخدم
+                        user_ids = list(users_data.keys())
+                        try:
+                            user_number = user_ids.index(str(user_id)) + 1
+                        except:
+                            user_number = 0
+                    else:
+                        # مستخدم جديد تماماً
+                        user_number = len(users_data) + 1
+                    
+                    user_profile_link = get_user_profile_link(
+                        user_id,
+                        pending_data["username"],
+                        pending_data["first_name"]
+                    )
+                    
+                    # تحديد نوع الدخول
+                    if pending_data["invite_ref"]:
+                        entry_type = "🔗 اكتمل تسجيل دخول عبر رابط إحالة"
+                        ref_id = pending_data["invite_ref"]
+                        ref_data = get_user_data(ref_id) if ref_id in load_users() else None
+                        if ref_data:
+                            ref_profile_link = get_user_profile_link(
+                                ref_id,
+                                ref_data.get("username", "بدون"),
+                                ref_data.get("first_name", "")
+                            )
+                            entry_type += f"\n• المُحيل: {ref_profile_link}"
+                    else:
+                        entry_type = "🚪 اكتمل تسجيل دخول مباشر"
+                    
+                    completion_msg = (
+                        f"✅ **اكتمل تسجيل مستخدم جديد!**\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🎉 **الحالة:** 🟢 مسجل رسمياً الآن\n"
+                        f"{entry_type}\n"
+                        f"🔢 **رقم المستخدم:** #{user_number}\n"
+                        f"👤 **اليوزر:** {user_profile_link}\n"
+                        f"🆔 **ID:** <code>{user_id}</code>\n"
+                        f"📛 **الاسم:** {pending_data['first_name']} {pending_data['last_name'] or ''}\n"
+                        f"🌐 **اللغة:** {pending_data['language_code']}\n"
+                        f"📅 **أول دخول:** {pending_data['timestamp']}\n"
+                        f"📅 **اكتمل التسجيل:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"📢 **مشترك في:** جميع القنوات ✅\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"💡 **ملاحظة:**\n"
+                        f"• تم إرسال إشعار أولي عند دخوله\n"
+                        f"• هذا الإشعار يؤكد اكتمال التسجيل"
+                    )
+                    
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            completion_msg,
+                            parse_mode="HTML",
+                            disable_web_page_preview=True
+                        )
+                        logger.info(f"✅ تم إرسال إشعار اكتمال التسجيل للآدمن: {user_id}")
+                    except Exception as e:
+                        logger.error(f"❌ خطأ في إرسال إشعار اكتمال للآدمن: {e}")
+                    
+                    # تنظيف البيانات المؤقتة
+                    context.user_data.pop("pending_start", None)
+                
+                # ✅ معالجة الإحالة المعلقة إذا وجدت
+                if "invite_pending" in context.user_data and context.user_data["invite_pending"]:
+                    await process_pending_invite(user_id, context, bot)
+                
+                # ✅ الانتقال إلى القائمة الرئيسية
                 await back_to_main(query, user_id)
             else:
                 await query.answer("❌ غير مشترك!", show_alert=True)
@@ -1807,6 +2264,18 @@ async def send_channel_completion_notifications(bot, channel_username, owner_id,
         import traceback
         traceback.print_exc()
         return False
+
+async def send_to_admin(bot, message):
+    """إرسال رسالة للمالك مع دعم HTML"""
+    try:
+        await bot.send_message(
+            ADMIN_ID, 
+            message, 
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logger.error(f"Error sending to admin: {e}")
 
 async def send_join_notification_to_owner(bot, channel_username, owner_id, user_data, 
                                           is_returning_user, current_count, required_count, 
@@ -4673,8 +5142,7 @@ def update_user_channel_join_info(user_id, channel_id, channel_username, current
 
 def update_system_stats(stat_name, increment=0, value=None):
     """
-    تحديث إحصائيات النظام
-    يدعم: الزيادة التراكمية أو القيمة المطلقة
+    تحديث إحصائيات النظام - نسخة مصححة
     """
     from database import update_stat, get_stat, logger
     
@@ -4683,14 +5151,20 @@ def update_system_stats(stat_name, increment=0, value=None):
             # تعيين قيمة مطلقة
             update_stat(stat_name, value)
         elif increment != 0:
-            # زيادة تراكمية
-            current = get_stat(stat_name, 0)
+            # زيادة تراكمية - الحصول على القيمة الحالية أولاً
+            current = get_stat(stat_name)  # ❗ تعديل هنا: إزالة القيمة الافتراضية
+            if current is None:
+                current = 0
+            
             update_stat(stat_name, current + increment)
         
+        logger.debug(f"✅ تم تحديث إحصائية {stat_name}")
         return True
         
     except Exception as e:
         logger.error(f"❌ خطأ في update_system_stats: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
