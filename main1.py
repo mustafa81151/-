@@ -1442,8 +1442,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             invited_users = ref_data.get("invited_users", [])
             
             if user_id not in invited_users:
-                # ✅ منح 4 نقاط للمحيل
-                success, message = safe_add_points(ref_id, 4, "add", "invite_reward_complete")
+                # ✅ منح 3 نقاط للمحيل
+                success, message = safe_add_points(ref_id, 3, "add", "invite_reward_complete")
                 
                 if success:
                     # تحديث قائمة المدعوين
@@ -1456,7 +1456,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     # ✅ تحديث إحصائيات النظام
                     update_system_stats("total_invites", increment=1)
-                    update_system_stats("total_invite_points", increment=4)
+                    update_system_stats("total_invite_points", increment=3)
                     
                     # 🔔 إرسال رسالة للمُحيل برابط ملف صديقه الشخصي
                     try:
@@ -1473,13 +1473,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         # إرسال رسالة للمُحيل
                         await context.bot.send_message(
                             int(ref_id),
-                            f"🎊 **لقد حصل صديقك على 4 نقاط!**\n\n"
+                            f"🎊 **لقد حصل صديقك على 3 نقاط!**\n\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n"
                             f"👤 **صديقك:** {new_user_profile_link}\n"
                             f"📌 انقر على اسمه لترى ملفه الشخصي!\n\n"
                             f"✅ **حصلت على:**\n"
-                            f"• 4 نقاط إضافية 💎\n"
-                            f"• نقاطك الآن: {ref_data.get('points', 0) + 4}\n"
+                            f"• 3 نقاط إضافية 💎\n"
+                            f"• نقاطك الآن: {ref_data.get('points', 0) + 3}\n"
                             f"• دعواتك: {ref_data.get('invites', 0) + 1} شخص\n\n"
                             f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1516,7 +1516,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"• الرقم: #{ref_rank} 👑\n"
                             f"• اليوزر: {ref_profile_link}\n"
                             f"• الآيدي: <code>{ref_id}</code>\n"
-                            f"• النقاط: {ref_data.get('points', 0)} → {ref_data.get('points', 0) + 4} (+4)\n"
+                            f"• النقاط: {ref_data.get('points', 0)} → {ref_data.get('points', 0) + 3} (+3)\n"
                             f"• دعا: {ref_data.get('invites', 0)} → {ref_data.get('invites', 0) + 1} شخص\n\n"
                             f"👥 **الشخص الجديد:**\n"
                             f"• الرقم: #{user_number} 👤\n"
@@ -1525,7 +1525,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"• الاسم: {user.first_name} {user.last_name or ''}\n\n"
                             f"✅ **الحالة:** 🟢 مسجل رسمياً + مشترك\n\n"
                             f"💰 **المكافأة الممنوحة:**\n"
-                            f"• 4 نقاط للمُحيل ✅\n\n"
+                            f"• 3 نقاط للمُحيل ✅\n\n"
                             f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                             f"━━━━━━━━━━━━━━━━━━━━",
                             parse_mode="HTML",
@@ -1748,14 +1748,14 @@ async def process_pending_invite(user_id, context, bot):
             logger.info(f"⚠️ النقاط ممنوحة مسبقاً للمُحيل {ref_id} للمستخدم {user_id}")
             return
         
-        # ✅ منح 4 نقاط للمحيل (لأن المستخدم أكمل الاشتراك الآن)
+        # ✅ منح 3 نقاط للمحيل (لأن المستخدم أكمل الاشتراك الآن)
         old_points = ref_data.get("points", 0)
         old_invites = ref_data.get("invites", 0)
         
-        success, message = safe_add_points(ref_id, 4, "add", "invite_reward_complete")
+        success, message = safe_add_points(ref_id, 3, "add", "invite_reward_complete")
         
         if success:
-            new_points = old_points + 4
+            new_points = old_points + 3
             new_invites = old_invites + 1
             
             # تحديث قائمة المدعوين
@@ -1771,7 +1771,7 @@ async def process_pending_invite(user_id, context, bot):
             
             # ✅ تحديث إحصائيات النظام
             update_system_stats("total_invites", increment=1)
-            update_system_stats("total_invite_points", increment=4)
+            update_system_stats("total_invite_points", increment=3)
             
             # الحصول على بيانات المستخدم الجديد
             user_data = get_user_data(user_id)
@@ -1791,12 +1791,12 @@ async def process_pending_invite(user_id, context, bot):
                 
                 await bot.send_message(
                     int(ref_id),
-                    f"🎊 **لقد حصل صديقك على 4 نقاط!**\n\n"
+                    f"🎊 **لقد حصل صديقك على 3 نقاط!**\n\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"👤 **صديقك:** {new_user_profile_link}\n"
                     f"📌 انقر على اسمه لترى ملفه الشخصي!\n\n"
                     f"✅ **حصلت على:**\n"
-                    f"• 4 نقاط إضافية 💎\n"
+                    f"• 3 نقاط إضافية 💎\n"
                     f"• نقاطك الآن: {new_points}\n"
                     f"• دعواتك: {new_invites} شخص\n\n"
                     f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -1837,7 +1837,7 @@ async def process_pending_invite(user_id, context, bot):
                     f"• الرقم: #{ref_rank} 👑\n"
                     f"• اليوزر: {ref_profile_link}\n"
                     f"• الآيدي: <code>{ref_id}</code>\n"
-                    f"• النقاط: {old_points} → {new_points} (+4)\n"
+                    f"• النقاط: {old_points} → {new_points} (+3)\n"
                     f"• دعا: {old_invites} → {new_invites} شخص\n\n"
                     f"👥 **الشخص الجديد:**\n"
                     f"• الرقم: #{user_number} 👤\n"
@@ -1845,7 +1845,7 @@ async def process_pending_invite(user_id, context, bot):
                     f"• الآيدي: <code>{user_id}</code>\n\n"
                     f"✅ **الحالة:** 🟢 مسجل رسمياً + مشترك\n\n"
                     f"💰 **المكافأة الممنوحة:**\n"
-                    f"• 4 نقاط للمُحيل ✅\n\n"
+                    f"• 3 نقاط للمُحيل ✅\n\n"
                     f"⏰ **الوقت:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"━━━━━━━━━━━━━━━━━━━━",
                     parse_mode="HTML",
@@ -3988,7 +3988,7 @@ async def show_invite_link(query, user_id, bot):
     
     user_data = get_user_data(user_id)
     
-    text = f"🔗 رابطك:\n\n{invite_link}\n\n👥 دعواتك: {user_data['invites']}\n💰 النقاط: {user_data['invites'] * 4}"
+    text = f"🔗 رابطك:\n\n{invite_link}\n\n👥 دعواتك: {user_data['invites']}\n💰 النقاط: {user_data['invites'] * 3}"
     
     keyboard = [[InlineKeyboardButton("🔙 رجوع", callback_data="back_main")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
