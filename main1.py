@@ -2470,7 +2470,7 @@ async def handle_claim_daily_gift(query, user_id, bot):
                 logger.error(f"❌ خطأ في تحقق الهدية: {e}")
         
         # ✅ بعد كل الفحوصات: منح النقاط
-        points_to_add = 3
+        points_to_add = 2
         success, message = safe_add_points(user_id, points_to_add, "add", "daily_gift", transaction_id)
         
         if not success:
@@ -3338,7 +3338,7 @@ async def handle_join_channel(query, user_id, bot):
             f"2️⃣ اشترك في القناة\n"
             f"3️⃣ انتظر 5-10 ثواني\n"
             f"4️⃣ ارجع واضغط زر 'تحقق'\n\n"
-            f"💰 **المكافأة:** 3 نقاط ✨"
+            f"💰 **المكافأة:** 2 نقاط ✨"
         )
         
         try:
@@ -3347,7 +3347,7 @@ async def handle_join_channel(query, user_id, bot):
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📲 رابط القناة", url=channel_link)],
-                    [InlineKeyboardButton("✅ تحقق والحصول على 3 نقاط", 
+                    [InlineKeyboardButton("✅ تحقق والحصول على 2 نقاط", 
                                          callback_data=f"verify_channel_{channel_id}")]
                 ])
             )
@@ -3358,7 +3358,7 @@ async def handle_join_channel(query, user_id, bot):
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📲 رابط القناة", url=channel_link)],
-                    [InlineKeyboardButton("✅ تحقق والحصول على 3 نقاط", 
+                    [InlineKeyboardButton("✅ تحقق والحصول على 2 نقاط", 
                                          callback_data=f"verify_channel_{channel_id}")]
                 ])
             )
@@ -3588,7 +3588,7 @@ async def handle_verify_channel(query, user_id, bot, context):
             ''', (new_current, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), channel_id))
             
             # منح 3 نقاط للمستخدم
-            points_to_add = 3
+            points_to_add = 2
             new_points = current_points + points_to_add
             
             cursor.execute('''
@@ -3749,7 +3749,7 @@ async def handle_verify_channel(query, user_id, bot, context):
                         f"📢 القناة: @{username}\n"
                         f"👤 العضو: @{user_username}\n"
                         f"📊 العداد: {current} → {new_current}/{required}\n"
-                        f"💰 حصل على: 3 نقاط\n"
+                        f"💰 حصل على: 2 نقاط\n"
                         f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                         parse_mode="HTML"
                     )
@@ -4722,7 +4722,7 @@ def update_user_joined_channels_immediate(user_id, channel_id, verified=True):
             "channel_username": channel_username,
             "joined_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "verified": verified,
-            "points_earned": 3 if verified else 0,
+            "points_earned": 2 if verified else 0,
             "left": False,
             "round": current_round or 0,
             "verified_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if verified else None,
