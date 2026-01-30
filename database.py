@@ -53,7 +53,8 @@ def init_database():
                 permanent_left_channels TEXT DEFAULT '[]',
                 left_completed_channels TEXT DEFAULT '[]',
                 transactions TEXT DEFAULT '[]',
-                join_history TEXT DEFAULT '[]'
+                join_history TEXT DEFAULT '[]',
+                permanent_registered BOOLEAN DEFAULT 0  -- ✅ إضافة عمود للتسجيل الدائم
             )
         ''')
         
@@ -165,7 +166,7 @@ def init_database():
             )
         ''')
         
-        # ⭐⭐⭐ جدول المعاملات الجديد ⭐⭐⭐
+        # جدول المعاملات
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 transaction_id TEXT PRIMARY KEY,
@@ -213,6 +214,40 @@ def init_database():
             )
         ''')
         
+        # ⭐⭐⭐ جدول التسجيلات الدائمة ⭐⭐⭐
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS permanent_registrations (
+                registration_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT UNIQUE,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                language_code TEXT,
+                joined_at TIMESTAMP,
+                completed_force_sub BOOLEAN DEFAULT 0,
+                force_sub_completed_at TIMESTAMP,
+                invite_ref TEXT,
+                status TEXT DEFAULT 'pending', -- pending, completed, left, banned
+                last_checked TIMESTAMP,
+                archived BOOLEAN DEFAULT 0,
+                metadata TEXT DEFAULT '{}',
+                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+            )
+        ''')
+        
+        # ⭐⭐⭐ جدول سجل التحقق من الاشتراك ⭐⭐⭐
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS subscription_checks (
+                check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                channel_username TEXT,
+                subscribed BOOLEAN,
+                checked_at TIMESTAMP,
+                force_sub BOOLEAN DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+            )
+        ''')
+        
         # إنشاء الفهارس
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_points ON users(points)')
@@ -221,6 +256,10 @@ def init_database():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_transactions_channel ON transactions(channel_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions(timestamp)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_permanent_reg_user ON permanent_registrations(user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_permanent_reg_status ON permanent_registrations(status)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_subscription_checks_user ON subscription_checks(user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_subscription_checks_time ON subscription_checks(checked_at)')
         
         # إضافة إحصائيات افتراضية
         default_stats = [
@@ -238,7 +277,10 @@ def init_database():
             ('total_channel_joins', 0),
             ('total_channel_points_earned', 0),
             ('total_channel_points_deducted', 0),
-            ('total_transactions', 0)
+            ('total_transactions', 0),
+            ('total_permanent_registrations', 0),  # ✅ إضافة إحصائية جديدة
+            ('total_force_sub_completed', 0),  # ✅ إضافة إحصائية جديدة
+            ('total_returning_users', 0)  # ✅ إضافة إحصائية جديدة
         ]
         
         for key, value in default_stats:
@@ -252,88 +294,48 @@ def init_database():
         
         # إضافة الأعمدة المفقودة للقواعد الحالية
         add_missing_columns()
+        check_and_add_registered_column() 
+        
+        # التحقق من تحديث جدول users لإضافة العمود الجديد
+        try:
+            cursor.execute("SELECT permanent_registered FROM users LIMIT 1")
+        except sqlite3.OperationalError:
+            # العمود غير موجود، إضافته
+            cursor.execute('ALTER TABLE users ADD COLUMN permanent_registered BOOLEAN DEFAULT 0')
+            logger.info("✅ تم إضافة عمود permanent_registered إلى جدول users")
+        
+        conn.commit()
         
     except Exception as e:
         logger.error(f"❌ خطأ في إنشاء قاعدة البيانات: {e}")
+        import traceback
+        traceback.print_exc()
         conn.rollback()
-    finally:
-        conn.close()
-
-# ===================== دوال المستخدمين =====================
-
-def get_user_data(user_id: str) -> Dict:
-    """الحصول على بيانات مستخدم"""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    try:
-        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-        row = cursor.fetchone()
-        
-        if row:
-            columns = [description[0] for description in cursor.description]
-            user_data = dict(zip(columns, row))
-            
-            # تحويل JSON strings إلى objects
-            json_fields = [
-                'invited_users', 'bought_channels', 'joined_channels',
-                'active_subscriptions', 'orders', 'daily_gift',
-                'reported_channels', 'left_channels', 'temp_left_channels',
-                'permanent_left_channels', 'left_completed_channels',
-                'transactions', 'join_history'
-            ]
-            
-            for field in json_fields:
-                if field in user_data and user_data[field]:
-                    user_data[field] = json.loads(user_data[field])
-            
-            return user_data
-        else:
-            # إنشاء مستخدم جديد
-            new_user = create_default_user_data()
-            cursor.execute('''
-                INSERT INTO users (
-                    user_id, username, first_name, last_name, points, invites,
-                    total_earned, total_spent, first_join, last_active, inactive,
-                    reports_made, reports_received, invited_users, bought_channels,
-                    joined_channels, active_subscriptions, orders, daily_gift,
-                    reported_channels, left_channels, temp_left_channels,
-                    permanent_left_channels, left_completed_channels, transactions,
-                    join_history
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                user_id, '', '', '', 0, 0, 0, 0,
-                new_user['first_join'], new_user['last_active'], 0, 0, 0,
-                json.dumps(new_user['invited_users']),
-                json.dumps(new_user['bought_channels']),
-                json.dumps(new_user['joined_channels']),
-                json.dumps(new_user['active_subscriptions']),
-                json.dumps(new_user['orders']),
-                json.dumps(new_user['daily_gift']),
-                json.dumps(new_user['reported_channels']),
-                json.dumps(new_user['left_channels']),
-                json.dumps(new_user['temp_left_channels']),
-                json.dumps(new_user['permanent_left_channels']),
-                json.dumps(new_user['left_completed_channels']),
-                json.dumps(new_user['transactions']),
-                json.dumps(new_user['join_history'])
-            ))
-            conn.commit()
-            
-            # تحديث إحصائيات
-            update_stat('total_users', 1)
-            
-            return new_user
-            
-    except Exception as e:
-        logger.error(f"خطأ في get_user_data: {e}")
-        return create_default_user_data()
     finally:
         conn.close()
 
 # أضف هذه الدوال إلى database.py
 
-
+def add_missing_columns():
+    """إضافة الأعمدة المفقودة إلى الجداول"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        # التحقق وإضافة عمود registered إذا كان مفقوداً
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        if 'registered' not in columns:
+            cursor.execute('ALTER TABLE users ADD COLUMN registered INTEGER DEFAULT 0')
+            logger.info("✅ تم إضافة عمود registered إلى جدول users")
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"❌ خطأ في إضافة الأعمدة المفقودة: {e}")
+        return False
 
 def add_admin(user_id):
     """إضافة أدمن"""
@@ -362,7 +364,50 @@ def get_admins():
     data = load_data()
     return data.get("admins", [])
 
-
+def get_user_data(user_id, force_reload=False):
+    """دالة بديلة لجلب بيانات المستخدم"""
+    try:
+        from database import load_users
+        
+        users_data = load_users()
+        user_id_str = str(user_id)
+        
+        if user_id_str in users_data:
+            return users_data[user_id_str]
+        else:
+            # إنشاء بيانات افتراضية
+            return {
+                "user_id": user_id_str,
+                "username": "",
+                "first_name": "",
+                "last_name": "",
+                "points": 0,
+                "invites": 0,
+                "total_earned": 0,
+                "total_spent": 0,
+                "first_join": "",
+                "last_active": "",
+                "joined_channels": {},
+                "active_subscriptions": [],
+                "temp_left_channels": [],
+                "permanent_left_channels": [],
+                "invited_users": [],
+                "total_reports": 0,
+                "channel_reports": {},
+                "blocked_channels_by_report": [],
+                "orders": [],
+                "daily_gift": {},
+                "muted_until": "",
+                "banned": False,
+                "force_sub_passed": False,
+                "force_sub_passed_at": "",
+                "force_sub_left": False,
+                "force_sub_left_at": "",
+                "force_sub_returned_at": ""
+            }
+    except Exception as e:
+        logger.error(f"خطأ في get_user_data البديلة: {e}")
+        return {}
 
 def update_user_data(user_id, updates, action_type="update", transaction_id=None):
     """تحديث بيانات المستخدم مع إصلاح الأخطاء"""
@@ -377,8 +422,36 @@ def update_user_data(user_id, updates, action_type="update", transaction_id=None
         user_row = cursor.fetchone()
         
         if not user_row:
-            # إنشاء بيانات افتراضية
-            create_default_user_data(user_id)
+            # ✅ إنشاء مستخدم جديد في قاعدة البيانات
+            default_data = create_default_user_data(user_id)
+            
+            # إعداد بيانات للإدراج
+            columns = []
+            values = []
+            placeholders = []
+            
+            # جلب أسماء الأعمدة الصحيحة
+            cursor.execute("PRAGMA table_info(users)")
+            db_columns = [col[1] for col in cursor.fetchall()]
+            
+            for key in db_columns:
+                if key in default_data:
+                    columns.append(key)
+                    value = default_data[key]
+                    
+                    # تحويل القيم المعقدة إلى JSON
+                    if isinstance(value, (dict, list)):
+                        value = json.dumps(value, ensure_ascii=False)
+                    
+                    values.append(value)
+                    placeholders.append("?")
+            
+            # إدراج المستخدم الجديد
+            sql = f"INSERT INTO users ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
+            cursor.execute(sql, values)
+            logger.info(f"✅ تم إنشاء مستخدم جديد: {user_id}")
+            
+            # جلب الصف بعد الإدراج
             cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
             user_row = cursor.fetchone()
         
@@ -408,10 +481,18 @@ def update_user_data(user_id, updates, action_type="update", transaction_id=None
             set_clauses.append("last_active = ?")
             values.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         
-        # إضافة transaction_id إلى سجل المعاملات
+        # ✅ إصلاح المشكلة 1: جلب transactions بطريقة آمنة
         if transaction_id and "transactions" in columns:
             cursor.execute("SELECT transactions FROM users WHERE user_id = ?", (user_id,))
-            transactions_json = cursor.fetchone()[0] or "[]"
+            result = cursor.fetchone()
+            
+            transactions_json = "[]"  # القيمة الافتراضية
+            
+            if result and result[0]:
+                try:
+                    transactions_json = result[0] if result[0] else "[]"
+                except:
+                    transactions_json = "[]"
             
             try:
                 transactions = json.loads(transactions_json)
@@ -421,6 +502,10 @@ def update_user_data(user_id, updates, action_type="update", transaction_id=None
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "updates": updates
                 })
+                
+                # تأكد أن المعاملات لا تتجاوز 100 معاملة (للحفاظ على الأداء)
+                if len(transactions) > 100:
+                    transactions = transactions[-100:]
                 
                 set_clauses.append("transactions = ?")
                 values.append(json.dumps(transactions, ensure_ascii=False))
@@ -436,9 +521,6 @@ def update_user_data(user_id, updates, action_type="update", transaction_id=None
         conn.commit()
         conn.close()
         
-        # ✅ إزالة قسم التخزين المؤقت المشكلة
-        # كان الكود يحاول الوصول إلى _data_cache غير الموجود
-        
         logger.info(f"✅ تم تحديث بيانات {user_id} - {action_type}")
         return True
         
@@ -446,6 +528,42 @@ def update_user_data(user_id, updates, action_type="update", transaction_id=None
         logger.error(f"❌ خطأ في update_user_data: {e}")
         import traceback
         traceback.print_exc()
+        
+        # ✅ إغلاق الاتصال في حالة الخطأ
+        try:
+            if 'conn' in locals():
+                conn.close()
+        except:
+            pass
+            
+        return False
+
+def check_and_add_registered_column():
+    """التحقق من وجود عمود registered وإضافته إذا كان مفقوداً"""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        # التحقق من وجود العمود
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        if 'registered' not in columns:
+            # إضافة العمود
+            cursor.execute("ALTER TABLE users ADD COLUMN registered INTEGER DEFAULT 0")
+            conn.commit()
+            logger.info("✅ تم إضافة عمود registered إلى جدول users")
+            
+            # تحديث جميع المستخدمين الحاليين ليكونوا مسجلين
+            cursor.execute("UPDATE users SET registered = 1 WHERE permanent_registered = 1")
+            cursor.execute("UPDATE users SET registered = 1 WHERE first_join IS NOT NULL")
+            conn.commit()
+            logger.info("✅ تم تحديث حالة تسجيل المستخدمين الحاليين")
+        
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"❌ خطأ في إضافة عمود registered: {e}")
         return False
 
 def load_users() -> Dict:
@@ -496,9 +614,10 @@ def save_users(users_data: Dict, backup: bool = False) -> bool:
     # في SQLite، البيانات محفوظة مباشرة
     return True
 
-def create_default_user_data() -> Dict:
+def create_default_user_data(user_id: str) -> Dict:
     """إنشاء بيانات مستخدم افتراضية"""
     return {
+        "user_id": user_id,  # ⬅️ أضف هذا السطر المهم
         "points": 0,
         "invites": 0,
         "invited_users": [],
@@ -507,13 +626,14 @@ def create_default_user_data() -> Dict:
         "username": "",
         "first_name": "",
         "last_name": "",
-        "first_join": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "first_join": None,
+        "registered": False,
         "total_earned": 0,
         "total_spent": 0,
         "orders": [],
         "reports_made": 0,
         "reports_received": 0,
-        "last_active": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_active": None,
         "active_subscriptions": [],
         "daily_gift": {
             "last_claimed": None,
