@@ -294,7 +294,6 @@ def init_database():
         
         # إضافة الأعمدة المفقودة للقواعد الحالية
         add_missing_columns()
-        check_and_add_registered_column() 
         
         # التحقق من تحديث جدول users لإضافة العمود الجديد
         try:
@@ -316,26 +315,7 @@ def init_database():
 
 # أضف هذه الدوال إلى database.py
 
-def add_missing_columns():
-    """إضافة الأعمدة المفقودة إلى الجداول"""
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        # التحقق وإضافة عمود registered إذا كان مفقوداً
-        cursor.execute("PRAGMA table_info(users)")
-        columns = [column[1] for column in cursor.fetchall()]
-        
-        if 'registered' not in columns:
-            cursor.execute('ALTER TABLE users ADD COLUMN registered INTEGER DEFAULT 0')
-            logger.info("✅ تم إضافة عمود registered إلى جدول users")
-        
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"❌ خطأ في إضافة الأعمدة المفقودة: {e}")
-        return False
+
 
 def add_admin(user_id):
     """إضافة أدمن"""
@@ -364,50 +344,7 @@ def get_admins():
     data = load_data()
     return data.get("admins", [])
 
-def get_user_data(user_id, force_reload=False):
-    """دالة بديلة لجلب بيانات المستخدم"""
-    try:
-        from database import load_users
-        
-        users_data = load_users()
-        user_id_str = str(user_id)
-        
-        if user_id_str in users_data:
-            return users_data[user_id_str]
-        else:
-            # إنشاء بيانات افتراضية
-            return {
-                "user_id": user_id_str,
-                "username": "",
-                "first_name": "",
-                "last_name": "",
-                "points": 0,
-                "invites": 0,
-                "total_earned": 0,
-                "total_spent": 0,
-                "first_join": "",
-                "last_active": "",
-                "joined_channels": {},
-                "active_subscriptions": [],
-                "temp_left_channels": [],
-                "permanent_left_channels": [],
-                "invited_users": [],
-                "total_reports": 0,
-                "channel_reports": {},
-                "blocked_channels_by_report": [],
-                "orders": [],
-                "daily_gift": {},
-                "muted_until": "",
-                "banned": False,
-                "force_sub_passed": False,
-                "force_sub_passed_at": "",
-                "force_sub_left": False,
-                "force_sub_left_at": "",
-                "force_sub_returned_at": ""
-            }
-    except Exception as e:
-        logger.error(f"خطأ في get_user_data البديلة: {e}")
-        return {}
+
 
 def update_user_data(user_id, updates, action_type="update", transaction_id=None):
     """تحديث بيانات المستخدم مع إصلاح الأخطاء"""
@@ -422,36 +359,8 @@ def update_user_data(user_id, updates, action_type="update", transaction_id=None
         user_row = cursor.fetchone()
         
         if not user_row:
-            # ✅ إنشاء مستخدم جديد في قاعدة البيانات
-            default_data = create_default_user_data(user_id)
-            
-            # إعداد بيانات للإدراج
-            columns = []
-            values = []
-            placeholders = []
-            
-            # جلب أسماء الأعمدة الصحيحة
-            cursor.execute("PRAGMA table_info(users)")
-            db_columns = [col[1] for col in cursor.fetchall()]
-            
-            for key in db_columns:
-                if key in default_data:
-                    columns.append(key)
-                    value = default_data[key]
-                    
-                    # تحويل القيم المعقدة إلى JSON
-                    if isinstance(value, (dict, list)):
-                        value = json.dumps(value, ensure_ascii=False)
-                    
-                    values.append(value)
-                    placeholders.append("?")
-            
-            # إدراج المستخدم الجديد
-            sql = f"INSERT INTO users ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
-            cursor.execute(sql, values)
-            logger.info(f"✅ تم إنشاء مستخدم جديد: {user_id}")
-            
-            # جلب الصف بعد الإدراج
+            # إنشاء بيانات افتراضية
+            create_default_user_data(user_id)
             cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
             user_row = cursor.fetchone()
         
@@ -481,18 +390,10 @@ def update_user_data(user_id, updates, action_type="update", transaction_id=None
             set_clauses.append("last_active = ?")
             values.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         
-        # ✅ إصلاح المشكلة 1: جلب transactions بطريقة آمنة
+        # إضافة transaction_id إلى سجل المعاملات
         if transaction_id and "transactions" in columns:
             cursor.execute("SELECT transactions FROM users WHERE user_id = ?", (user_id,))
-            result = cursor.fetchone()
-            
-            transactions_json = "[]"  # القيمة الافتراضية
-            
-            if result and result[0]:
-                try:
-                    transactions_json = result[0] if result[0] else "[]"
-                except:
-                    transactions_json = "[]"
+            transactions_json = cursor.fetchone()[0] or "[]"
             
             try:
                 transactions = json.loads(transactions_json)
@@ -502,10 +403,6 @@ def update_user_data(user_id, updates, action_type="update", transaction_id=None
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "updates": updates
                 })
-                
-                # تأكد أن المعاملات لا تتجاوز 100 معاملة (للحفاظ على الأداء)
-                if len(transactions) > 100:
-                    transactions = transactions[-100:]
                 
                 set_clauses.append("transactions = ?")
                 values.append(json.dumps(transactions, ensure_ascii=False))
@@ -521,6 +418,9 @@ def update_user_data(user_id, updates, action_type="update", transaction_id=None
         conn.commit()
         conn.close()
         
+        # ✅ إزالة قسم التخزين المؤقت المشكلة
+        # كان الكود يحاول الوصول إلى _data_cache غير الموجود
+        
         logger.info(f"✅ تم تحديث بيانات {user_id} - {action_type}")
         return True
         
@@ -528,42 +428,6 @@ def update_user_data(user_id, updates, action_type="update", transaction_id=None
         logger.error(f"❌ خطأ في update_user_data: {e}")
         import traceback
         traceback.print_exc()
-        
-        # ✅ إغلاق الاتصال في حالة الخطأ
-        try:
-            if 'conn' in locals():
-                conn.close()
-        except:
-            pass
-            
-        return False
-
-def check_and_add_registered_column():
-    """التحقق من وجود عمود registered وإضافته إذا كان مفقوداً"""
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        # التحقق من وجود العمود
-        cursor.execute("PRAGMA table_info(users)")
-        columns = [col[1] for col in cursor.fetchall()]
-        
-        if 'registered' not in columns:
-            # إضافة العمود
-            cursor.execute("ALTER TABLE users ADD COLUMN registered INTEGER DEFAULT 0")
-            conn.commit()
-            logger.info("✅ تم إضافة عمود registered إلى جدول users")
-            
-            # تحديث جميع المستخدمين الحاليين ليكونوا مسجلين
-            cursor.execute("UPDATE users SET registered = 1 WHERE permanent_registered = 1")
-            cursor.execute("UPDATE users SET registered = 1 WHERE first_join IS NOT NULL")
-            conn.commit()
-            logger.info("✅ تم تحديث حالة تسجيل المستخدمين الحاليين")
-        
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"❌ خطأ في إضافة عمود registered: {e}")
         return False
 
 def load_users() -> Dict:
@@ -614,10 +478,9 @@ def save_users(users_data: Dict, backup: bool = False) -> bool:
     # في SQLite، البيانات محفوظة مباشرة
     return True
 
-def create_default_user_data(user_id: str) -> Dict:
+def create_default_user_data() -> Dict:
     """إنشاء بيانات مستخدم افتراضية"""
     return {
-        "user_id": user_id,  # ⬅️ أضف هذا السطر المهم
         "points": 0,
         "invites": 0,
         "invited_users": [],
@@ -626,14 +489,13 @@ def create_default_user_data(user_id: str) -> Dict:
         "username": "",
         "first_name": "",
         "last_name": "",
-        "first_join": None,
-        "registered": False,
+        "first_join": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "total_earned": 0,
         "total_spent": 0,
         "orders": [],
         "reports_made": 0,
         "reports_received": 0,
-        "last_active": None,
+        "last_active": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "active_subscriptions": [],
         "daily_gift": {
             "last_claimed": None,
