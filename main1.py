@@ -140,7 +140,7 @@ async def safe_edit(query, text, reply_markup=None):
         pass
 
 # إعدادات البوت
-TOKEN = "8450413524:AAE3Hxcb0tijnwb75kLJzkyhqIzPPBT8XYk"
+TOKEN = "8653078106:AAExKb_61ifvuqFX1bkEv_KiB4R88iTm00k"
 ADMIN_ID = 8117492678
 BOT_CHANNEL = "@TUX3T"
 
