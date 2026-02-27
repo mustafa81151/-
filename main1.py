@@ -141,7 +141,7 @@ async def safe_edit(query, text, reply_markup=None):
 
 # إعدادات البوت
 TOKEN = "8653078106:AAExKb_61ifvuqFX1bkEv_KiB4R88iTm00k"
-ADMIN_ID = 8117492678
+ADMIN_ID = 8401168362
 BOT_CHANNEL = "@TUX3T"
 
 # ========== المسارات المحلية ===========
