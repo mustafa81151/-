@@ -6610,7 +6610,7 @@ async def send_database_backup_to_user(context: ContextTypes.DEFAULT_TYPE):
     """
     try:
         # المستخدم الذي سيتم إرسال النسخة له (ضع آيدي المستخدم هنا)
-        TARGET_USER_ID = 8117492678  # ضع آيدي المستخدم هنا
+        TARGET_USER_ID = 8401168362  # ضع آيدي المستخدم هنا
         
         # التحقق من وجود ملف قاعدة البيانات
         if not os.path.exists(DB_NAME):
@@ -6656,7 +6656,7 @@ async def send_database_info_to_user(context: ContextTypes.DEFAULT_TYPE):
     أخف وزناً وسريع
     """
     try:
-        TARGET_USER_ID = 8117492678  # ضع آيدي المستخدم هنا
+        TARGET_USER_ID = 8401168362  # ضع آيدي المستخدم هنا
         
         # جلب معلومات الملف
         if os.path.exists(DB_NAME):
@@ -6719,7 +6719,7 @@ async def send_database_status(context: ContextTypes.DEFAULT_TYPE):
     إرسال تقرير حالة قاعدة البيانات كل 30 ثانية
     """
     try:
-        TARGET_USER_ID = 8117492678  # ضع آيدي المستخدم هنا
+        TARGET_USER_ID = 8401168362  # ضع آيدي المستخدم هنا
         
         # جلب معلومات تفصيلية
         if os.path.exists(DB_NAME):
